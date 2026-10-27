@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+build/
+*.zip
+
+# Temp
+tmp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Resources (too large for git)
+resources/

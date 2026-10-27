@@ -1,0 +1,193 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-paper: #101216;
+  --color-surface: #181b21;
+  --color-sand: #20242c;
+  --color-ink: #e7ebf2;
+  --color-ink-2: #b4bdca;
+  --color-muted: #919ba9;
+  --color-line: #2b3039;
+  --color-line-2: #3b4350;
+  --color-line-3: #586272;
+  --color-accent: #3977f6;
+  --color-accent-dark: #89b2ff;
+  --color-accent-soft: #1b2b49;
+  --color-sun: #739df4;
+  --color-sun-soft: #22324e;
+  --color-sun-ink: #b2cbff;
+  --color-ok-soft: #19352d;
+  --color-ok-ink: #8dd9b8;
+  --color-info-soft: #1d3047;
+  --color-info-ink: #a5c9f0;
+  --color-bad-soft: #3b242a;
+  --color-bad-ink: #ffabb6;
+  --color-draft: #292e38;
+
+  --font-display: 'Plus Jakarta Sans Variable', 'Segoe UI', sans-serif;
+  --font-sans: 'Plus Jakarta Sans Variable', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', Consolas, monospace;
+
+  --shadow-ink: 0 1px 3px #00000033;
+  --shadow-ink-md: 0 8px 24px #00000033;
+  --shadow-ink-lg: 0 12px 32px #00000040;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('studio://fonts/Poppins-Medium.ttf') format('truetype');
+  font-weight: 500;
+}
+
+/*
+ * Compact mode. Tailwind's spacing scale is in rem, so a smaller root font size tightens every gap, padding
+ * and control at once, while the sizes written in px (most labels) stay exactly as they are.
+ */
+html.density-padat {
+  font-size: 14px;
+}
+@font-face {
+  font-family: 'Poppins';
+  src: url('studio://fonts/Poppins-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+}
+@font-face {
+  font-family: 'Poppins';
+  src: url('studio://fonts/Poppins-Bold.ttf') format('truetype');
+  font-weight: 700;
+}
+@font-face {
+  font-family: 'Poppins';
+  src: url('studio://fonts/Poppins-ExtraBold.ttf') format('truetype');
+  font-weight: 800;
+}
+
+/* Caption fonts (the same files libass uses for the export). */
+@font-face {
+  font-family: 'Anton';
+  src: url('studio://fonts/Anton-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Bebas Neue';
+  src: url('studio://fonts/BebasNeue-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Archivo Black';
+  src: url('studio://fonts/ArchivoBlack-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Lilita One';
+  src: url('studio://fonts/LilitaOne-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Titan One';
+  src: url('studio://fonts/TitanOne-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Luckiest Guy';
+  src: url('studio://fonts/LuckiestGuy-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Comic Neue';
+  src: url('studio://fonts/ComicNeue-Bold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Chewy';
+  src: url('studio://fonts/Chewy-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Bubblegum Sans';
+  src: url('studio://fonts/BubblegumSans-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Boogaloo';
+  src: url('studio://fonts/Boogaloo-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Sniglet';
+  src: url('studio://fonts/Sniglet-ExtraBold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Bangers';
+  src: url('studio://fonts/Bangers-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Permanent Marker';
+  src: url('studio://fonts/PermanentMarker-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'DM Serif Display';
+  src: url('studio://fonts/DMSerifDisplay-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    color-scheme: dark;
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+  button:not(:disabled),
+  [role='button'] {
+    cursor: pointer;
+  }
+  ::selection {
+    background: var(--color-sun);
+    color: #101216;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  input[type='range'] {
+    accent-color: var(--color-accent);
+  }
+}
+
+@layer utilities {
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-2) transparent;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pulse-soft {
+  50% {
+    opacity: 0.55;
+  }
+}
