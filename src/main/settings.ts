@@ -4,6 +4,15 @@ import { getDb } from './db'
 import { randomUUID } from 'node:crypto'
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  flowVideoInputMode: 'agent',
+  channelStyleEnabled: true,
+  channelStyleDescription: 'Ilustrasi kartun 2D seperti referensi Kenzo: garis tegas bersih, warna lembut, bayangan sederhana. Semua NPC, bangunan, ruangan, tumbuhan dan benda memakai bahasa visual yang sama; jangan campur foto realistis, 3D atau stickman.',
+  channelStyleReference: 'builtin-kenzo',
+  channelCharacterEnabled: true,
+  channelCharacterName: 'Kenzo',
+  channelCharacterDescription: 'Pria dewasa muda bergaya kartun, rambut hitam pendek berantakan, mata besar ekspresif, kulit sawo matang terang, kumis dan janggut tipis. Kemeja biru lengan pendek di atas kaus hitam, celana gelap dan sepatu hitam. Ikuti wajah, proporsi dan gaya gambar referensi Kenzo.',
+  channelCharacterReference: 'builtin-kenzo',
+
   defaultTtsProvider: 'gemini',
   defaultLanguage: 'id',
   exportFolder: null,
@@ -24,6 +33,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
   imageProvider: 'higgsfield',
+  flowImageTransport: 'browser',
+  flowBrowserAccountId: 0,
+  flowBaseUrl: 'http://127.0.0.1:8765',
+  flowImageModel: 'gemini-3.1-flash-image-landscape',
+  flowVideoModel: 'veo-3.1-fast-i2v-4s-landscape',
   cloudflareAccountId: '',
   cloudflareModel: '@cf/stabilityai/stable-diffusion-xl-base-1.0',
   hfSpace: '',

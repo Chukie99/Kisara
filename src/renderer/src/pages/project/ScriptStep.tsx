@@ -178,8 +178,10 @@ export function ScriptStep() {
   const [scriptView, setScriptView] = useState<'read' | 'scenes' | 'flow'>('read')
   const [focusId, setFocusId] = useState<string | null>(null)
   const [refining, setRefining] = useState(false)
+  const [refineError, setRefineError] = useState<string | null>(null)
   const [visualProgress, setVisualProgress] = useState<ScriptProgress | null>(null)
   const ownRequest = useRef(false)
+  useEffect(() => { setRefineError(null) }, [project?.id])
 
   useEffect(() => {
     if (!project) return
@@ -276,14 +278,16 @@ export function ScriptStep() {
   }
 
   const refine = async (): Promise<void> => {
+    if (refining) return
     setRefining(true)
+    setRefineError(null)
     try {
       await flush()
       const bundle = await window.api.story.refineScript(project.id)
       if (useProject.getState().project?.id !== project.id) return
       load(bundle)
       toast('success', 'Naskah dan dialog diperbarui. Tinjau hasilnya, lalu buat ulang visual dan suara yang berubah.')
-    } catch (e) { toast('error', errorText(e)) }
+    } catch (e) { if (useProject.getState().project?.id === project.id) setRefineError(errorText(e)) }
     finally { setRefining(false) }
   }
 
@@ -320,6 +324,9 @@ export function ScriptStep() {
             <span className="rounded-full border border-line-2 bg-surface px-3 py-1.5 text-ink-2">Target {target}</span>
           </div>
 
+          <p className="text-xs leading-relaxed text-muted">Susun dan perbaiki naskah mencakup pemeriksaan alur lintas adegan lewat model penulis. Proses dapat memakai beberapa permintaan tambahan; belum memverifikasi fakta secara independen. Untuk naskah lama, gunakan Perbaiki naskah &amp; dialog lalu tinjau hasilnya.</p>
+          {refining && <p role="status" className="rounded-lg border border-line bg-surface p-3 text-sm">Sedang memperbaiki naskah dan memeriksa alurnya. Naskah lama dipertahankan sampai hasil lengkap.</p>}
+          {refineError && <p role="alert" className="rounded-lg bg-bad-soft p-3 text-sm text-bad-ink">Perbaikan belum diterapkan. {refineError}</p>}
           {project.synopsis.trim() && (
             <div className="flex items-start gap-3 rounded-xl bg-sand px-4 py-3 text-[13px] text-ink-2">
               <span className="shrink-0 font-semibold text-ink">Ide awal</span>

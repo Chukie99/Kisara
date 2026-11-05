@@ -1,3 +1,5 @@
+import { ChannelCharacter } from '../components/ChannelCharacter'
+import { FlowWorkers } from '../components/FlowWorkers'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
@@ -682,6 +684,7 @@ function ImagesSection({ settings, statusOf, onChanged, onSettings }: { settings
       logo: 'higgsfield',
       status: statusOf('higgsfield')
     },
+    { id: 'flow2api', name: 'Google Flow (Flow2API)', note: 'Server lokal dengan akun Google dan worker Chrome milikmu.', logo: 'flow2api', status: statusOf('flow2api') },
     {
       id: 'cloudflare',
       name: 'Cloudflare Workers AI',
@@ -702,10 +705,12 @@ function ImagesSection({ settings, statusOf, onChanged, onSettings }: { settings
       <SectionTitle
         icon={<ImageIcon className="size-5" />}
         title="Gambar dan video"
-        sub="Pilih layanan yang menggambar klip. Video AI selalu lewat Higgsfield, atau impor video buatan sendiri dari langkah Storyboard."
+        sub="Pilih layanan yang menggambar klip. Google Flow mendukung gambar dan image-to-video melalui server lokal. Kamu juga bisa impor hasil dari luar."
       />
       <ProviderSelect value={provider} options={options} onChange={async (id) => onSettings(await window.api.settings.set({ imageProvider: id }))} />
-      {provider === 'cloudflare' ? (
+      {provider === 'flow2api' ? (
+        <FlowCard settings={settings} status={statusOf('flow2api')} onChanged={onChanged} onSettings={onSettings} />
+      ) : provider === 'cloudflare' ? (
         <CloudflareCard settings={settings} status={statusOf('cloudflare')} onChanged={onChanged} onSettings={onSettings} />
       ) : provider === 'huggingface' ? (
         <HuggingFaceCard settings={settings} status={statusOf('huggingface')} onChanged={onChanged} />
@@ -750,6 +755,41 @@ function ImagesSection({ settings, statusOf, onChanged, onSettings }: { settings
 }
 
 /** Cloudflare needs an account id beside its token, so it gets its own form instead of the shared KeyForm. */
+function FlowCard({settings,status,onChanged,onSettings}:{settings:AppSettings;status:KeyStatus|undefined;onChanged:()=>void;onSettings:(s:AppSettings)=>void}) {
+  const [flowAccounts,setFlowAccounts]=useState<Awaited<ReturnType<typeof window.api.settings.flowSetup>>['accounts']>([])
+  useEffect(()=>{if(status?.configured)void window.api.settings.flowSetup().then(value=>setFlowAccounts(value.accounts)).catch(()=>{})},[status?.checkedAt])
+  const [base,setBase]=useState(settings.flowBaseUrl),[key,setKey]=useState(''),[busy,setBusy]=useState(false)
+  const [info,setInfo]=useState<Awaited<ReturnType<typeof window.api.settings.flowStatus>>|null>(null),[error,setError]=useState<string|null>(null)
+  useEffect(()=>{if(status?.configured)void window.api.settings.flowStatus().then(setInfo).catch(e=>setError(errorText(e)))},[status?.checkedAt])
+  const connect=async(local:boolean):Promise<void>=>{
+    setBusy(true);setError(null)
+    try{
+      if(local)await window.api.settings.connectFlowLocal()
+      else await window.api.settings.setFlow2Api(base,key)
+      const settings=await window.api.settings.get();onSettings(settings);setBase(settings.flowBaseUrl);setKey('')
+      setInfo(await window.api.settings.flowStatus());onChanged()
+    }catch(e){setError(errorText(e))}finally{setBusy(false)}
+  }
+  const choices=(video:boolean)=>{const ids=(info?.models??[]).filter(id=>video?/veo|omni/.test(id)&&/landscape/.test(id):/-image-landscape(?:-|$)/.test(id));const selected=video?settings.flowVideoModel:settings.flowImageModel;return [...new Set([selected,...ids])].map(value=>({value,label:value}))}
+  return <Card>
+    <div className="flex items-center gap-3"><ProviderLogo id="flow2api"/><div className="flex-1"><strong>Google Flow · server lokal</strong><p className="text-xs text-muted">Akun Google tetap dikelola di panel Flow2API.</p></div><StatusBadge status={status}/></div>
+    <p className="text-sm text-ink-2">Server lokal otomatis menyala saat Kisara dibuka jika Google Flow dipilih. Hubungkan langsung tanpa menyalin kunci.</p>
+    <div className="flex flex-wrap gap-2"><Button variant="primary" loading={busy} onClick={()=>void connect(true)}>Hubungkan server lokal</Button><Button onClick={()=>void window.api.app.openExternal(base+'/manage')}>Buka panel akun</Button></div>
+    <details><summary className="cursor-pointer text-sm">Alamat dan API key manual</summary><div className="mt-3 flex flex-col gap-2"><label className="text-sm">Alamat Flow2API<input aria-label="Alamat Flow2API" className={inputCls} value={base} disabled={busy} onChange={e=>setBase(e.target.value)}/></label><label className="text-sm">API key Flow2API<input type="password" autoComplete="off" aria-label="API key Flow2API" placeholder="Kosongkan untuk memakai kunci tersimpan" className={inputCls} value={key} disabled={busy} onChange={e=>setKey(e.target.value)}/></label><Button loading={busy} onClick={()=>void connect(false)}>Simpan dan tes Flow</Button></div></details>
+    {error&&<p role="alert" className="rounded-lg bg-bad-soft p-3 text-sm text-bad-ink">{error}</p>}
+    {info&&<p role="status" className="text-sm">{info.message} {settings.flowImageTransport==='api' ? info.failover?'Pemilihan akun saat limit: aktif.':'Pemilihan akun masih mengikuti backend. Mulai ulang Flow2API setelah pembaruan.':''}</p>}
+    {status?.configured && <FlowWorkers key={status.checkedAt} browserMode={settings.flowImageTransport==='browser'}/>}
+    <Field label="Cara membuat gambar Flow"><Select label="Cara membuat gambar Flow" value={settings.flowImageTransport} onChange={value=>void window.api.settings.set({flowImageTransport:value as 'api'|'browser'}).then(onSettings)} options={[{value:'browser',label:'Lewat halaman Chrome',hint:'Nano Banana 2.1, mengikuti rasio proyek, dengan referensi karakter dan gaya. Chrome dan satu proyek Flow harus terbuka.'},{value:'api',label:'Lewat API Flow2API',hint:'Jalur lama; dapat ditolak Google walaupun sesi dan worker tersambung.'}]}/></Field>
+    {settings.flowImageTransport==='browser' && <Field label="Akun untuk gambar Flow"><Select label="Akun untuk gambar Flow" value={String(settings.flowBrowserAccountId)} onChange={value=>void window.api.settings.set({flowBrowserAccountId:Number(value)}).then(onSettings)} options={[{value:'0',label:'Otomatis · pindah akun saat kuota habis'},...flowAccounts.map(a=>({value:String(a.id),label:a.email,hint:a.workerConnected?'Worker tersambung':'Buka Chrome profil akun ini'}))]}/></Field>}
+    {settings.flowImageTransport==='api' && <>
+    <Field label="Model gambar Flow"><Select label="Model gambar Flow" value={settings.flowImageModel} onChange={flowImageModel=>void window.api.settings.set({flowImageModel}).then(onSettings)} options={choices(false)}/></Field>
+    <Field label="Model image-to-video Flow"><Select label="Model image-to-video Flow" value={settings.flowVideoModel} onChange={flowVideoModel=>void window.api.settings.set({flowVideoModel}).then(onSettings)} options={choices(true)}/></Field>
+    </>}
+    {settings.flowImageTransport==='browser' && <p className="text-sm text-muted">Nano Banana 2.1 · satu gambar per klip · rasio otomatis mengikuti proyek (16:9 atau 9:16). Biarkan Chrome dan satu proyek Flow terbuka. Mode Otomatis memakai satu akun sampai kuota habis, lalu lanjut akun berikutnya. Buka satu proyek Flow di setiap profil akun yang akan dipakai. Kuota diperiksa sebelum mengirim prompt; jika hasil sudah dikirim tetapi belum pasti, antrean berhenti. Akun yang kuotanya habis dilewati sampai kamu memilihnya manual dan berhasil membuat gambar. Video dan unggahan referensi belum tersedia.</p>}
+    <p className="text-xs text-muted">Generasi berjalan satu per satu. Tidak ada batas buatan 20 gambar. Kuota Google tetap berlaku; hasil yang sudah jadi tersimpan per adegan. Tes koneksi belum membuktikan worker atau generasi berhasil.</p>
+  </Card>
+}
+
 function CloudflareCard({ settings, status, onChanged, onSettings }: { settings: AppSettings; status?: KeyStatus; onChanged: () => void; onSettings: (s: AppSettings) => void }) {
   const { toast } = useApp()
   const [account, setAccount] = useState(settings.cloudflareAccountId)
@@ -981,9 +1021,10 @@ export function Settings() {
               <>
                 <div>
                   <h1 className="font-display text-[34px] font-bold tracking-[-0.015em]">Umum</h1>
-                  <p className="mt-2 text-[15px] text-ink-2">Pilihan bawaan untuk proyek baru.</p>
+                  <p className="mt-2 text-[15px] text-ink-2">Karakter utama channel dan pilihan bawaan aplikasi.</p>
                 </div>
                 <section className="flex flex-col gap-5 rounded-2xl border border-line bg-surface p-6">
+                  <ChannelCharacter settings={settings} onChanged={setSettings} />
                   <Field label="Kepadatan tampilan" hint="Padat memperkecil semua jarak supaya lebih banyak muat di satu layar.">
                     <Select
                       label="Kepadatan tampilan"

@@ -3,7 +3,7 @@ import { emit } from './events'
 import { getJobRaw, updateJob } from './repo'
 import { cancelRequest } from './services/higgsfield'
 
-export type QueueName = 'higgsfield' | 'huggingface' | 'tts' | 'whisper' | 'export' | 'f5-local'
+export type QueueName = 'higgsfield' | 'huggingface' | 'tts' | 'whisper' | 'export' | 'f5-local' | 'flow2api'
 
 export interface TaskCtx {
   jobId: string
@@ -16,9 +16,9 @@ export interface TaskCtx {
 export type Task = (ctx: TaskCtx) => Promise<string | void | { message: string }>
 
 // Whisper uses most CPU cores by itself, so it runs one file at a time.
-const LIMITS: Record<QueueName, number> = { higgsfield: 3, huggingface: 1, tts: 2, whisper: 1, export: 1, 'f5-local': 1 }
-const running: Record<QueueName, number> = { higgsfield: 0, huggingface: 0, tts: 0, whisper: 0, export: 0, 'f5-local': 0 }
-const waiting: Record<QueueName, (() => void)[]> = { higgsfield: [], huggingface: [], tts: [], whisper: [], export: [], 'f5-local': [] }
+const LIMITS: Record<QueueName, number> = { higgsfield: 3, huggingface: 1, tts: 2, whisper: 1, export: 1, 'f5-local': 1, flow2api: 1 }
+const running: Record<QueueName, number> = { higgsfield: 0, huggingface: 0, tts: 0, whisper: 0, export: 0, 'f5-local': 0, flow2api: 0 }
+const waiting: Record<QueueName, (() => void)[]> = { higgsfield: [], huggingface: [], tts: [], whisper: [], export: [], 'f5-local': [], flow2api: [] }
 const controllers = new Map<string, AbortController>()
 const finished = new Map<string, Promise<void>>()
 

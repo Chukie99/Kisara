@@ -7,7 +7,7 @@ import { useApp } from '../../store/app'
 import { useProject } from '../../store/project'
 
 const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: 'Ide & durasi' },
+  { n: 1, label: 'Ide & kerangka' },
   { n: 2, label: 'Naskah & prompt' },
   { n: 3, label: 'Visual & suara' },
   { n: 4, label: 'Edit & ekspor' }

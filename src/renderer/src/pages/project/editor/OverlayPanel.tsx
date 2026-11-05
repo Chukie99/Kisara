@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { ImagePlus, Trash2, Type } from 'lucide-react'
 import {
   TEXT_COLORS,
+  TEXT_ANIMATIONS,
   TEXT_SIZES,
   TEXT_STYLES,
   anchorPoint,
@@ -12,8 +13,9 @@ import {
   type Anchor
 } from '@shared/overlays'
 import type { ImageOverlay, Overlay, TextOverlay } from '@shared/types'
+import { Select } from '../../../components/Select'
 import { AutoTextarea } from '../../../components/AutoTextarea'
-import { IconButton, Segmented, Switch, cx, inputCls } from '../../../components/ui'
+import { Button, IconButton, Segmented, Switch, cx, inputCls } from '../../../components/ui'
 import { errorText, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
 import { useProject } from '../../../store/project'
@@ -153,6 +155,8 @@ function ImageSettings({ o }: { o: ImageOverlay }) {
 
 function TextSettings({ o }: { o: TextOverlay }) {
   const size = TEXT_SIZES.reduce((a, b) => (Math.abs(b.size - o.size) < Math.abs(a.size - o.size) ? b : a))
+  const counter = o.counter
+  const setCounter = (patch: Partial<NonNullable<TextOverlay['counter']>>): void => updateOverlay(o.id, { counter: { from: 0, to: 0, duration: 1.2, prefix: 'Rp', suffix: '', decimals: 0, ...counter, ...patch, offset:0 } })
   return (
     <Section title="Teks">
       <AutoTextarea
@@ -164,6 +168,16 @@ function TextSettings({ o }: { o: TextOverlay }) {
         aria-label="Isi teks overlay"
         className={cx(inputCls, 'py-2 text-sm leading-relaxed')}
       />
+      <label className="flex flex-col gap-1 text-xs text-ink-2">Animasi teks
+        <Select label="Animasi teks" value={o.animation ?? 'none'} onChange={animation => updateOverlay(o.id, {animation})} options={TEXT_ANIMATIONS.map(a=>({value:a.id,label:a.label}))} />
+      </label>
+      {o.animation && o.animation !== 'none' && <label className="flex flex-col gap-1 text-xs text-ink-2">Durasi masuk/keluar (detik)<input aria-label="Durasi animasi teks" className={inputCls} type="number" min={0.1} max={2} step={0.05} value={o.animationSec ?? 0.35} onChange={e=>updateOverlay(o.id,{animationSec:Math.max(0.1,Math.min(2,Number(e.target.value)))})} /></label>}
+      <Switch label="Angka berjalan" on={!!counter} onChange={on=>updateOverlay(o.id,{counter:on?{from:0,to:0,duration:1.2,prefix:'Rp',suffix:'',decimals:0}:undefined})} />
+      {counter && <div className="flex flex-col gap-2 rounded-lg border border-line p-2">
+        <p className="text-xs text-muted">Isi angka dari naskah yang sudah kamu tinjau. Angka dapat naik atau turun; bukan kalkulasi saldo otomatis.</p>
+        <div className="grid grid-cols-2 gap-2">{(['from','to','duration','decimals'] as const).map(key=><label key={key} className="flex flex-col gap-1 text-xs">{{from:'Nilai awal',to:'Nilai akhir',duration:'Lama hitung (detik)',decimals:'Desimal'}[key]}<input aria-label={'Angka '+key} className={inputCls} type="number" step={key==='duration'?0.1:1} min={key==='duration'?0.1:key==='decimals'?0:undefined} max={key==='duration'?10:key==='decimals'?2:undefined} value={counter[key]} onChange={e=>setCounter({[key]:Number(e.target.value)})} /></label>)}</div>
+        {(['prefix','suffix'] as const).map(key=><label key={key} className="flex flex-col gap-1 text-xs">{key==='prefix'?'Awalan (mis. Rp)':'Akhiran (mis. /bulan)'}<input aria-label={'Angka '+key} className={inputCls} value={counter[key]} onChange={e=>setCounter({[key]:e.target.value.slice(0,40)})} /></label>)}
+      </div>}
       <div className="flex items-center gap-3">
         <span className="w-14 text-[13px] text-ink-2">Ukuran</span>
         <Segmented size="sm" value={size.id} onChange={(id) => updateOverlay(o.id, { size: TEXT_SIZES.find((s) => s.id === id)!.size })} options={TEXT_SIZES} />
@@ -218,10 +232,11 @@ export function OverlayPanel({ total }: { total: number }) {
     }
   }
 
-  const addText = (): void => {
+  const addText = (counter = false): void => {
     const now = usePlayback.getState().t
     const start = round1(now >= total - 0.5 ? 0 : now)
     const o = newTextOverlay(start, round1(Math.min(total, start + 4)), aspect)
+    if (counter) Object.assign(o, {text:'Saldo',counter:{from:0,to:0,duration:1.2,prefix:'Rp',suffix:'',decimals:0},anchor:9,...anchorPoint(9,aspect),size:0.045,color:'#51CF66'})
     addOverlay(o)
     requestAnimationFrame(() => {
       const el = document.getElementById(`overlay-${o.id}-text`) as HTMLTextAreaElement | null
@@ -253,7 +268,7 @@ export function OverlayPanel({ total }: { total: number }) {
           </button>
           <button
             type="button"
-            onClick={addText}
+            onClick={() => addText()}
             className="flex flex-col items-center gap-1.5 rounded-xl border border-line-2 bg-surface px-2 py-3 text-center hover:border-ink-2"
           >
             <Type className="size-5" />
@@ -261,6 +276,8 @@ export function OverlayPanel({ total }: { total: number }) {
             <span className="text-[11.5px] leading-tight text-muted">Judul, keterangan, ajakan</span>
           </button>
         </div>
+        <Button size="sm" onClick={() => addText(true)}>Tambah angka berjalan</Button>
+        <p className="text-xs text-muted">Teks dan angka bergerak terpisah dari gambar Flow. Pilih waktu tampil agar sesuai ucapan narator.</p>
       </Section>
 
       <Section title="Overlay di video" className={cx(!sel && 'border-b-0')}>

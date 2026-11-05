@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Film, Image as ImageIcon, Move, Users } from 'lucide-react'
 import { effectiveResolution, fitDuration, getImageModel, getVideoModel, hfModelOptions, maxRefs, resolutionOptions } from '@shared/higgsfield'
-import type { CreditEstimate, ModelOption, Project } from '@shared/types'
+import type { AppSettings, CreditEstimate, ModelOption, Project } from '@shared/types'
 import { ModelLogo } from '../../components/ModelLogo'
 import { ModelPicker } from '../../components/ModelPicker'
 import { Segmented, Spinner } from '../../components/ui'
@@ -76,9 +76,11 @@ export function ModelSection({
   const resolutions = resolutionOptions(video)
   const resolution = effectiveResolution(video, project.videoResolution)
   const videoCost = useEstimate('video', video.id, project.aspectRatio, perClip, resolution)
+  const [flow,setFlow]=useState<AppSettings|null>(null)
   const [hasKey, setHasKey] = useState<boolean | null>(null)
 
   useEffect(() => {
+    void window.api.settings.get().then(s=>setFlow(s.imageProvider==='flow2api'?s:null))
     void window.api.settings.keys().then((keys) => setHasKey(!!keys.find((k) => k.provider === 'higgsfield')?.configured))
   }, [])
 
@@ -90,6 +92,7 @@ export function ModelSection({
     [videoCosts, perClip, hasKey]
   )
 
+  if(flow)return <div className="rounded-xl border border-line bg-surface p-4 text-sm"><strong>Google Flow (Flow2API)</strong><p className="mt-2 break-all text-ink-2">Gambar: {flow.flowImageModel}<br/>Video: {flow.flowVideoModel}</p><p className="mt-2 text-xs text-muted">Model mengikuti Pengaturan → Gambar dan video. Kuota berasal dari akun Google kamu.</p></div>
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-baseline gap-2">

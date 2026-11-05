@@ -56,7 +56,7 @@ $env:STUDIO_USER_DATA = "C:\temp\kisara-dev"; npm run dev
 ## Dev harness (pengujian otomatis)
 
 Belum ada unit test. Perubahan diuji dengan menjalankan aplikasi sungguhan yang dikendalikan file JSON
-(`src/main/devharness.ts`). Harness hanya aktif kalau aplikasi tidak dipaketkan dan `STUDIO_CAPTURE_PLAN` diisi.
+(`src/main/devharness.ts`). Harness hanya aktif kalau aplikasi tidak dipaketkan, `STUDIO_CAPTURE_PLAN` diisi, dan `STUDIO_USER_DATA` menunjuk profil uji terpisah yang benar-benar dipakai aplikasi. Folder pustaka utama yang dikenal ditolak.
 
 ```powershell
 npm run build

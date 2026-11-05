@@ -185,11 +185,13 @@ export const TTS_SPEECH_WPS: Record<TtsProvider, number> = {
 }
 
 /** Topic buckets the idea generator draws from, chosen for the niches this app is used for. */
-export const IDEA_TOPICS: { id: string; label: string; note: string }[] = [
+export const IDEA_TOPICS: { id: string; label: string; note: string; fictional?: boolean; direction?: string }[] = [
+  { id: 'finance', label: 'Finance', note: 'Uang sehari-hari, mekanisme ekonomi, dan salah kaprah', fictional: false, direction: 'Find underexplained mechanisms or misconceptions connected to daily money decisions. Explain who is affected, through what intermediate steps and under which conditions; avoid unsupported causal claims, fake experts or promised returns.' },
   { id: 'sejarah', label: 'Sejarah', note: 'Peristiwa, tokoh, kerajaan' },
   { id: 'misteri', label: 'Misteri', note: 'Yang belum terpecahkan' },
   { id: 'horor', label: 'Horor', note: 'Kisah seram dan legenda' },
-  { id: 'fakta', label: 'Fakta unik', note: 'Hal yang bikin kaget' },
+  { id: 'fakta', label: 'Fakta unik dan pengetahuan mengejutkan', note: 'Fenomena sehari-hari, penjelasan ilmiah, dan miskonsepsi', fictional: false, direction: 'Choose ONE well-established surprising fact or everyday phenomenon and explain why it happens, with essential context and a supported takeaway. Avoid lists of unrelated trivia, invented numbers, fake research, sensational absolutes, and myths presented as facts. Do not claim independent verification; the creator must check sources before publishing.' },
+  { id: 'kehidupan', label: 'Cerita kehidupan dan konflik sehari-hari', note: 'Keluarga, pertemanan, pekerjaan, tetangga, dan pilihan sulit', fictional: true, direction: 'Create ONE original fictional everyday-life story, explicitly identified as fiction in the synopsis. Use a relatable specific situation involving family, friendship, work, neighbors or money; establish each character with an understandable motivation, a believable conflict, connected choices and consequences, then a resolution. Keep dialogue natural when relevant. Avoid random twists, caricature villains, instant reconciliation, forced horror, and a generic moral instead of an ending.' },
   { id: 'sains', label: 'Sains', note: 'Alam, teknologi, angkasa' },
   { id: 'bisnis', label: 'Bisnis', note: 'Kisah sukses dan gagal' },
   { id: 'tokoh', label: 'Tokoh', note: 'Kisah hidup seseorang' },

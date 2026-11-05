@@ -1,3 +1,4 @@
+import { FlowStyleReference } from './FlowStyleReference'
 import { useState } from 'react'
 import { Check } from 'lucide-react'
 import { STYLE_CATEGORIES, VISUAL_STYLES, type StyleCategory } from '@shared/styles'
@@ -12,6 +13,7 @@ export function StylePicker({ value, onChange }: { value: string; onChange: (id:
   const list = VISUAL_STYLES.filter((s) => cat === 'all' || s.category === cat)
   return (
     <div className="flex flex-col gap-3">
+      <FlowStyleReference />
       <Segmented value={cat} onChange={setCat} options={STYLE_CATEGORIES.map((c) => ({ id: c.id, label: c.label }))} size="sm" className="self-start" />
       <div className="grid grid-cols-2 gap-3">
         {list.map((s) => {

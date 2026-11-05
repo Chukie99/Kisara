@@ -1,3 +1,4 @@
+import type { FormatPlan } from '@shared/contentFormat'
 import { randomUUID } from 'node:crypto'
 import { cpSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -186,7 +187,7 @@ export function createProject(input: NewProjectInput): Project {
       tts === 'f5-hf' ? s.f5VoiceId : defaultVoiceFor(tts),
       s.imageModel,
       s.videoModel,
-      JSON.stringify({ ...DEFAULT_EDITOR, ...(input.storyBrief ? { storyBrief: input.storyBrief } : {}) }),
+      JSON.stringify({ ...DEFAULT_EDITOR, ...(input.contentFormat ? {contentFormat:input.contentFormat,durationMode:input.durationMode ?? 'auto',formatPlan:input.formatPlan} : {}), ...(input.storyBrief ? { storyBrief: input.storyBrief } : {}) }),
       now,
       now
     )
@@ -486,9 +487,15 @@ export interface ScriptScene {
  * Replaces all scenes with a freshly written script. Characters stay: the visual step reuses the ones
  * whose names come back, so their character sheets survive a rewrite.
  */
-export function replaceScript(projectId: string, title: string, scenes: ScriptScene[]): void {
+export function replaceScript(projectId: string, title: string, scenes: ScriptScene[], planning?: {durationSec:number;formatPlan:FormatPlan}): void {
   const db = getDb()
   db.transaction(() => {
+    if (planning) {
+      const editor = getProject(projectId).editor
+      db.prepare('UPDATE projects SET duration_sec = ?, editor_json = ? WHERE id = ?').run(
+        planning.durationSec, JSON.stringify({ ...editor, formatPlan: planning.formatPlan }), projectId
+      )
+    }
     db.prepare('DELETE FROM clips WHERE project_id = ?').run(projectId)
     const insert = db.prepare(
       `INSERT INTO clips (id, project_id, sort, title, story, narration, duration_ms, character_ids)

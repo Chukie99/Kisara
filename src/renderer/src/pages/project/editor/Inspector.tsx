@@ -92,7 +92,7 @@ function ClipTab({ clip, index }: { clip: Clip; index: number }) {
         <Section title="Video AI">
           {video ? (
             <p className="text-[13px] text-ink-2">
-              {video.provider === 'local' ? 'Klip ini memakai video yang kamu impor sendiri.' : 'Klip ini memakai video dari Higgsfield.'}
+              {video.provider === 'local' ? 'Klip ini memakai video yang kamu impor sendiri.' : video.provider === 'flow2api' ? 'Klip ini memakai video dari Google Flow.' : 'Klip ini memakai video dari Higgsfield.'}
             </p>
           ) : (
             <p className="text-[13px] text-ink-2">Video belum dibuat. Sampai video siap, pratinjau memakai gambar diam.</p>

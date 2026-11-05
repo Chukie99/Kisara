@@ -82,6 +82,7 @@ export function newTextOverlay(start: number, end: number, frameAspect: number):
     id: crypto.randomUUID(),
     kind: 'text',
     text: 'Teks baru',
+    animation: 'fade',
     anchor: 8,
     ...anchorPoint(8, frameAspect),
     size: 0.065,
@@ -91,4 +92,55 @@ export function newTextOverlay(start: number, end: number, frameAspect: number):
     start,
     end
   }
+}
+
+export const TEXT_ANIMATIONS = [{ id: 'none', label: 'Diam' }, { id: 'fade', label: 'Pudar' }, { id: 'pop', label: 'Membesar' }, { id: 'slideup', label: 'Naik perlahan' }] as const
+export const OVERLAY_FPS = 30
+const bound = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, Number.isFinite(n) ? n : lo))
+export interface TextFrame { text: string; opacity: number; scale: number; dy: number }
+/** A shared, deterministic frame for seeking, preview and ASS export, including backwards counters. */
+export function textOverlayFrame(o: TextOverlay, time: number, total: number): TextFrame {
+  const t = Math.max(o.start, Math.floor((time + 1e-8) * OVERLAY_FPS) / OVERLAY_FPS)
+  const length = Math.max(0, overlayEnd(o, total) - o.start)
+  const duration = Math.min(length / 2, bound(o.animationSec ?? 0.35, 0.1, 2))
+  const animated = !!o.animation && o.animation !== 'none'
+  const enter = duration ? bound((t - o.start) / duration, 0, 1) : 1
+  const leave = duration ? bound((overlayEnd(o, total) - t) / duration, 0, 1) : 1
+  const opacity = animated ? Math.min(enter, leave) : 1
+  let text = o.text
+  if (o.counter) {
+    const c = o.counter, p = bound((t - o.start + bound(c.offset ?? 0, 0, 1e12)) / bound(c.duration, 0.1, 10), 0, 1)
+    const value = bound(c.from, -1e12, 1e12) + (bound(c.to, -1e12, 1e12) - bound(c.from, -1e12, 1e12)) * p
+    const decimals = Math.round(bound(c.decimals, 0, 2))
+    const formatted = new Intl.NumberFormat('id-ID', {minimumFractionDigits: decimals, maximumFractionDigits: decimals}).format(Math.abs(value) < 0.5 * 10 ** -decimals ? 0 : value)
+    text = [o.text, c.prefix + formatted + c.suffix].filter(Boolean).join('\n')
+  }
+  return { text, opacity, scale: o.animation === 'pop' ? 0.82 + 0.18 * opacity : 1, dy: o.animation === 'slideup' ? 0.035 * (1 - enter) : 0 }
+}
+/** Only entry, counter and exit need per-frame events; long static holds stay one event. */
+export function textOverlayFrames(o: TextOverlay, total: number): { start: number; end: number; frame: TextFrame }[] {
+  const end = overlayEnd(o, total)
+  if (!(end > o.start)) return []
+  const animated = !!o.animation && o.animation !== 'none'
+  const duration = animated ? Math.min((end - o.start) / 2, bound(o.animationSec ?? 0.35, 0.1, 2)) : 0
+  const activeEnd = Math.min(end, o.start + Math.max(duration, o.counter ? Math.max(0,bound(o.counter.duration, 0.1, 10) - bound(o.counter.offset ?? 0,0,1e12)) : 0))
+  const cuts = new Set([o.start, end, activeEnd, Math.max(o.start, end - duration)])
+  for (const [a,b] of [[o.start,activeEnd],[end-duration,end]]) {
+    for(let tick=Math.ceil(a*OVERLAY_FPS);tick/OVERLAY_FPS<b;tick++) cuts.add(tick/OVERLAY_FPS)
+  }
+  const points=[...cuts].filter(t=>t>=o.start && t<=end).sort((a,b)=>a-b)
+  const out: {start:number;end:number;frame:TextFrame}[]=[]
+  for(let i=0;i<points.length-1;i++) {
+    const frame=textOverlayFrame(o,points[i],total), previous=out.at(-1)
+    if(previous && JSON.stringify(previous.frame)===JSON.stringify(frame)) previous.end=points[i+1]
+    else out.push({start:points[i],end:points[i+1],frame})
+  }
+  return out
+}
+
+/** Keep a counter's numeric progress when splitting its timeline item. */
+export function splitOverlay(o: Overlay, at: number, id: string): Overlay[] {
+  const second: Overlay = {...o,id,start:at}
+  if(second.kind==='text' && second.counter) second.counter={...second.counter,offset:(second.counter.offset??0)+at-o.start}
+  return [{...o,end:at},second]
 }

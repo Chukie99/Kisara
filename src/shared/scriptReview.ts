@@ -4,7 +4,7 @@ import { stripVoiceTags } from './speech'
 
 /** Full input equality avoids applying a review after edits, without a lossy browser hash. */
 export function scriptReviewKey(project: Project, clips: Clip[]): string {
-  return JSON.stringify([project.id, project.language, project.synopsis, project.durationSec, project.editor.storyBrief, clips.map(c => [c.id, c.title, c.story, c.narration])])
+  return JSON.stringify(['comprehension-v2', project.id, project.language, project.synopsis, project.durationSec, project.editor.storyBrief, clips.map(c => [c.id, c.title, c.story, c.narration])])
 }
 
 export function inspectScript(project: Project, clips: Clip[]): ScriptFinding[] {
@@ -19,14 +19,16 @@ export function inspectScript(project: Project, clips: Clip[]): ScriptFinding[] 
     else seen.set(key, clip.id)
     if (project.editor.storyBrief?.fictional === false && /pasti untung|dijamin untung|cuan pasti|tanpa risiko/i.test(text))
       add('source', 'Periksa konteks klaim keuntungan atau risiko', 'Pastikan narasi tidak menjanjikan hasil pasti. Temuan ini pencarian frasa, bukan kesimpulan bahwa klaimnya salah.', [clip.id], text)
+    if (project.editor.storyBrief?.fictional === false && text.split(/[.!?]/u).some(sentence => /\b(?:langsung|otomatis|pasti|selalu|terpaksa)\b/i.test(sentence) && /\b(?:karena|membuat|menyebabkan|akibat|sehingga|memicu|kabur|memborong|menaikkan|menaikan)\b/i.test(sentence) && !/\b(?:tidak|bukan|belum tentu|jika|kalau|bisa|dapat)\b/i.test(sentence)))
+      add('source', 'Periksa hubungan sebab dan akibat', 'Kalimat memakai kepastian atau akibat langsung. Apakah penghubung, kondisi dan bukti sudah dijelaskan? Ini penanda frasa, bukan putusan bahwa klaimnya salah. Bila hanya kemungkinan, katakan sebagai kemungkinan.', [clip.id], text)
   }
   if (project.editor.storyBrief?.fictional === false) {
     const all = clips.map(c => stripVoiceTags(c.narration)).join(' ')
-    const unexplained = ['inflasi', 'diversifikasi', 'likuiditas', 'volatilitas', 'bunga majemuk', 'imbal hasil', 'obligasi', 'reksa dana'].filter(term => {
-      const at = all.toLocaleLowerCase().indexOf(term)
+    const unexplained = ['IHSG', 'kurs', 'modal asing', 'inflasi', 'diversifikasi', 'likuiditas', 'volatilitas', 'bunga majemuk', 'imbal hasil', 'obligasi', 'reksa dana', 'algoritma', 'API', 'DNA', 'antibodi', 'emisi', 'kalori', 'metabolisme'].filter(term => {
+      const at = all.search(new RegExp('(?<![\\p{L}\\p{N}])' + term + '(?![\\p{L}\\p{N}])', 'iu'))
       return at >= 0 && !/artinya|adalah|berarti|sederhananya|contohnya|yaitu|maksudnya|merupakan/i.test(all.slice(Math.max(0, at - 80), at + term.length + 180))
     })
-    if (unexplained.length) add('clarity', 'Periksa penjelasan istilah', 'Belum terdeteksi penjelasan dekat istilah: ' + unexplained.join(', ') + '. Jelaskan dengan bahasa sehari-hari bila belum jelas; pemeriksaan ini bisa melewatkan penjelasan dengan susunan lain.', clips.filter(c => unexplained.some(term => c.narration.toLocaleLowerCase().includes(term))).map(c => c.id))
+    if (unexplained.length) add('clarity', 'Periksa penjelasan istilah', 'Belum terdeteksi penjelasan dekat istilah: ' + unexplained.join(', ') + '. Jelaskan dengan bahasa sehari-hari bila belum jelas; pemeriksaan ini bisa melewatkan penjelasan dengan susunan lain.', clips.filter(c => unexplained.some(term => c.narration.toLocaleLowerCase().includes(term.toLocaleLowerCase()))).map(c => c.id))
     add('source', 'Fakta belum diverifikasi oleh aplikasi', 'Cocokkan angka, periode data, kutipan dan kesimpulan dengan sumber yang dapat diperiksa. Catatan dari transkrip bukan verifikasi independen.', [])
   }
   const total = clips.reduce((sum,c) => sum + c.durationMs, 0) / 1000

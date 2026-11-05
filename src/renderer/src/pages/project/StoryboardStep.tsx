@@ -26,7 +26,7 @@ import { needsVisual } from '@shared/script'
 import { sceneCharacters } from '@shared/characters'
 import { imageNeedsRefresh } from '@shared/imagePrompts'
 import { geminiVoiceName, geminiVoiceTone } from '@shared/models'
-import type { Asset, Clip } from '@shared/types'
+import type { AppSettings, Asset, Clip } from '@shared/types'
 import { AutoTextarea } from '../../components/AutoTextarea'
 import { CharacterAvatar } from '../../components/CharacterAvatar'
 import { ClipVisual } from '../../components/ClipVisual'
@@ -36,6 +36,12 @@ import { useNarration } from '../../lib/useNarration'
 import { useApp } from '../../store/app'
 import { isRunning, jobFor, useProject } from '../../store/project'
 import { CharacterModal } from './CharacterModal'
+
+function useFlowSettings(): AppSettings | null {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  useEffect(() => { let active = true; void window.api.settings.get().then(s=>{if(active)setSettings(s)}); return ()=>{active=false} }, [])
+  return settings
+}
 
 function useAudio(): { play: (url: string) => void; stop: () => void; playing: string | null } {
   const ref = useRef<HTMLAudioElement | null>(null)
@@ -111,6 +117,8 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
   const { toast } = useApp()
   const audio = useAudio()
   const [editPrompt, setEditPrompt] = useState(false)
+  const flowSettings = useFlowSettings()
+  const usesFlow = flowSettings?.imageProvider === 'flow2api'
   if (!project) return null
 
   const image = clip.imageAssetId ? assets[clip.imageAssetId] : null
@@ -225,6 +233,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             </div>
           )}
         </div>
+        {imageJob?.status === 'failed' && <div role="alert" className="mt-3 max-h-32 overflow-y-auto rounded-lg bg-bad-soft p-3 text-sm text-bad-ink"><p>{imageJob.error}</p>{imageJob.provider==='flow2api' && <Button size="sm" className="mt-2" onClick={() => void run(async () => { useApp.getState().go({name:'settings',back:{name:'project',id:clip.projectId}}) })}>Atur akun Flow</Button>}</div>}
       </div>
 
       <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
@@ -354,7 +363,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             {(
               [
                 { id: 'camera', title: 'Gerak kamera', sub: 'Gratis · dirender di komputer', icon: <Move className="size-[22px]" />, subCls: 'text-ok-ink' },
-                { id: 'video', title: 'Video AI', sub: 'Higgsfield · pakai kredit', icon: <Film className="size-[22px]" />, subCls: 'text-ink-2' }
+                { id: 'video', title: 'Video AI', sub: 'Layanan gambar terpilih · memakai kuota', icon: <Film className="size-[22px]" />, subCls: 'text-ink-2' }
               ] as const
             ).map((o) => {
               const on = clip.motionType === o.id
@@ -399,21 +408,21 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             <div className="flex flex-col gap-2">
               {!voice && (
                 <p className="rounded-lg bg-sun-soft px-2.5 py-1.5 text-xs text-sun-ink">
-                  Buat suara narasinya dulu. Panjang klip mengikuti suara, jadi durasi video AI ikut pas.
+                  Panjang klip mengikuti narasi. Durasi hasil video tergantung model; hasil yang lebih pendek memakai frame terakhir untuk sisa klip.
                 </p>
               )}
               {video?.durationMs != null && video.durationMs + 300 < clip.durationMs && (
                 <p className="rounded-lg bg-sun-soft px-2.5 py-1.5 text-xs text-sun-ink">
                   Video {secLabel(video.durationMs)}, klip {secLabel(clip.durationMs)}. Sisa {secLabel(clip.durationMs - video.durationMs)} memakai frame
-                  terakhir yang diam. Buat ulang video supaya pas.
+                  terakhir yang diam. Sesuaikan durasi klip di editor jika diperlukan.
                 </p>
               )}
               {project && (
                 <div className="flex items-center gap-1.5 text-xs text-ink-2">
                   <Film className="size-3.5 shrink-0" />
                   <span className="truncate">
-                    {getVideoModel(project.videoModel).name} · video {fitDuration(getVideoModel(project.videoModel), clip.durationMs / 1000)} detik
-                    {effectiveResolution(getVideoModel(project.videoModel), project.videoResolution) &&
+                    {usesFlow ? 'Flow · animasi dari gambar adegan' : `${getVideoModel(project.videoModel).name} · video ${fitDuration(getVideoModel(project.videoModel), clip.durationMs / 1000)} detik`}
+                    {!usesFlow && effectiveResolution(getVideoModel(project.videoModel), project.videoResolution) &&
                       ` · ${effectiveResolution(getVideoModel(project.videoModel), project.videoResolution)}`}
                   </span>
                   <button
@@ -460,7 +469,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                     {videoJob!.message ?? 'Memproses'} {Math.round(videoJob!.progress * 100)}%
                   </span>
                 )}
-                {videoJob?.status === 'failed' && <span className="truncate text-xs text-bad-ink">{videoJob.error}</span>}
+                {videoJob?.status === 'failed' && <div role="alert" className="rounded-lg bg-bad-soft p-3 text-sm text-bad-ink">{videoJob.error}{usesFlow && <Button size="sm" className="mt-2" onClick={()=>useApp.getState().go({name:'settings',back:{name:'project',id:clip.projectId}})}>Atur akun Flow</Button>}</div>}
               </div>
             </div>
           )}
@@ -473,6 +482,8 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
 export function StoryboardStep() {
   const { project, clips, characters, assets, jobs, selectedClipId, select, addClip, updateProject, flush, load } = useProject()
   const [pipelineRunning, setPipelineRunning] = useState(false)
+  const flowSettings = useFlowSettings()
+  const usesFlow = flowSettings?.imageProvider === 'flow2api'
   const { toast } = useApp()
   /** A character id, "new" for an unsaved one, or null. */
   const [openChar, setOpenChar] = useState<string | null>(null)
@@ -500,9 +511,10 @@ export function StoryboardStep() {
     const imgs = clips.filter((c) => c.imageAssetId).length
     const voices = clips.filter((c) => c.audioAssetId).length
     const needImg = clips.filter((c) => project && imageNeedsRefresh(c.imageAssetId ? assets[c.imageAssetId] : null, project, c, sceneCharacters(c, characters)) && !isRunning(jobFor(jobs, 'image', { clipId: c.id }))).length
+    const imageRunning = clips.filter(c => isRunning(jobFor(jobs, 'image', {clipId:c.id}))).length
     const videoRunning = clips.filter((c) => isRunning(jobFor(jobs, 'video', { clipId: c.id }))).length
     const needVideo = clips.filter((c) => !c.videoAssetId && !isRunning(jobFor(jobs, 'video', { clipId: c.id })))
-    return { imgs, voices, needImg, videoRunning, needVideo, total: clips.reduce((n, c) => n + c.durationMs, 0) }
+    return { imgs, voices, needImg, imageRunning, videoRunning, needVideo, total: clips.reduce((n, c) => n + c.durationMs, 0) }
   }, [clips, jobs, project, characters, assets])
 
   // Video length follows each clip's voice, so the cost is estimated per video length and summed.
@@ -591,8 +603,8 @@ export function StoryboardStep() {
     const ok = await confirmDialog({
       title: `Jadikan ${n} klip video AI?`,
       body:
-        `Setiap gambar klip dianimasikan dengan ${getVideoModel(project!.videoModel).name}, panjangnya mengikuti suara narasi klip itu.` +
-        (videoCredits != null ? ` Perkiraan biaya ${Math.round(videoCredits * 10) / 10} kredit Higgsfield.` : '') +
+        (usesFlow ? 'Setiap gambar klip dikirim sebagai referensi animasi ke Flow. Durasi hasil mengikuti model Flow; sisa klip panjang memakai frame terakhir. ' : `Setiap gambar klip dianimasikan dengan ${getVideoModel(project!.videoModel).name}.`) +
+        (!usesFlow && videoCredits != null ? ` Perkiraan biaya ${Math.round(videoCredits * 10) / 10} kredit Higgsfield.` : '') +
         ' Klip yang sudah punya video tidak dibuat ulang.',
       confirm: `Buat ${n} video`
     })
@@ -633,7 +645,8 @@ export function StoryboardStep() {
   return (
     <div className="grid h-full grid-rows-[64px_minmax(0,1fr)_80px]">
       <div className="flex items-center gap-2 border-b border-line bg-paper px-6">
-        <span className="mr-1 text-[13px] font-semibold text-ink-2">Pemeran</span>
+        {usesFlow && flowSettings?.channelCharacterEnabled && <button className="shrink-0 whitespace-nowrap rounded-lg border border-accent px-3 py-2 text-sm text-accent" onClick={()=>useApp.getState().go({name:'settings',back:{name:'project',id:project!.id}})}>Karakter utama: {flowSettings.channelCharacterName}</button>}
+        <span className="mr-1 text-[13px] font-semibold text-ink-2">Pemeran adegan</span>
         <div className="scroll-thin flex min-w-0 gap-2 overflow-x-auto py-1">
           {characters.map((c) => {
             const sheet = c.sheetAssetId ? assets[c.sheetAssetId] : null
@@ -670,12 +683,23 @@ export function StoryboardStep() {
           onClick={() => void narration.start()}
         >
           {narration.running
-            ? `${narration.message ?? 'Membuat suara'} ${Math.round(narration.progress * 100)}%`
+            ? `Membuat narasi ${Math.round(narration.progress * 100)}%`
             : narration.voiced === 0
               ? 'Buat suara narasi'
               : narration.stale
                 ? `Perbarui suara narasi (${narration.stale})`
                 : 'Rekam ulang suara narasi'}
+        </Button>
+        <Button
+          className="border-[1.5px] border-ink font-semibold"
+          icon={<ImageIcon className="size-[17px]" />}
+          disabled={!stats.needImg || stats.imageRunning > 0}
+          onClick={() => void bulk(() => window.api.generate.missingImages(project.id))}
+        >
+          {stats.imageRunning ? `Antrean ${stats.imageRunning} gambar` : `Buat ${stats.needImg} gambar`}
+          {credits != null && stats.needImg > 0 && (
+            <span className="font-normal text-ink-2">≈ {Math.round(credits * stats.needImg * 10) / 10} kr</span>
+          )}
         </Button>
         <MediaImportButton />
         <Button disabled={!clips.length} onClick={() => updateProject({ step: 2 })}>Prompt Google Flow</Button>
@@ -690,17 +714,7 @@ export function StoryboardStep() {
         >
           {pipelineRunning ? 'Mengerjakan semuanya…' : 'Kerjakan semua'}
         </Button>
-        <Button
-          className="border-[1.5px] border-ink font-semibold"
-          icon={<ImageIcon className="size-[17px]" />}
-          disabled={!stats.needImg}
-          onClick={() => void bulk(() => window.api.generate.missingImages(project.id))}
-        >
-          {stats.imgs ? 'Perbarui' : 'Buat'} {stats.needImg} gambar
-          {credits != null && stats.needImg > 0 && (
-            <span className="font-normal text-ink-2">≈ {Math.round(credits * stats.needImg * 10) / 10} kr</span>
-          )}
-        </Button>
+
         <Button
           icon={<Upload className="size-[17px]" />}
           disabled={!clips.length}
@@ -741,6 +755,8 @@ export function StoryboardStep() {
 
       <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_540px]">
         <section className="scroll-thin flex min-h-0 flex-col gap-3.5 overflow-y-auto px-6 pb-6 pt-[18px]">
+          {stats.imageRunning > 0 && <section role="status" aria-label="Antrean gambar" className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 text-sm"><div className="flex-1"><strong>{stats.imgs}/{clips.length} gambar siap · {stats.imageRunning} pekerjaan berjalan atau menunggu</strong><p className="text-xs text-muted">Hasil disimpan per klip. Antrean Flow berhenti jika ada pekerjaan gagal.</p></div><Button size="sm" onClick={()=>void Promise.all(Object.values(jobs).filter(j=>j.kind==='image' && isRunning(j)).map(j=>window.api.generate.cancel(j.id)))}>Hentikan antrean</Button></section>}
+          {narration.running && <section role="status" aria-label="Proses narasi" className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-4 text-sm"><strong>Narasi sedang diproses · {narration.voiced}/{clips.length} adegan tersimpan</strong><p>{narration.message}</p><progress aria-label="Progres narasi" value={narration.progress} max={1} className="w-full accent-accent"/><Button size="sm" className="self-start" onClick={() => void narration.cancel()}>Batalkan pembuatan narasi</Button></section>}
           <div className="flex items-center gap-3">
             <h1 className="font-display text-2xl font-bold">Visual & suara</h1>
             <span className="text-sm text-muted">

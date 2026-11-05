@@ -1,5 +1,7 @@
+import { channelCharacterBytes, channelCharacterKey, importChannelCharacter, channelStyleBytes, channelStyleKey, channelStylePrompt, sameReferenceImage } from './channelCharacter'
+import { insertJob, updateJob } from './repo'
 import { prepareMediaImport, applyMediaImport, discardMediaImport } from './mediaImport'
-import { execFileSync } from 'node:child_process'
+import { isolatedHarnessProfile, runFixtureTool } from './devHarnessTools'
 import assert from 'node:assert/strict'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
@@ -13,7 +15,7 @@ import { probeDurationMs } from './services/audio'
 import { applyScriptRefinement, applyVisuals, createProject, getBundle, getJob, insertAsset, patchClip, patchClipText, repairCharacterLinks, replaceScript, replaceStory, saveSnapshot, touchProject } from './repo'
 import { validateImageBytes, validateImageFile } from './imageQuality'
 import { waitForJob } from './jobs'
-import { composeSceneSpeech } from '@shared/speech'
+import { composeSceneSpeech, stripSpeakerLabels } from '@shared/speech'
 import { emit } from './events'
 import { recordCheck, setSecret } from './secrets'
 import { getSettings, setSettings } from './settings'
@@ -23,8 +25,13 @@ import type { ApiProvider, ScriptProgress } from '@shared/types'
  * Real speech for the demo clips (Windows' built-in English voice) with estimated caption timings, so
  * Whisper caption syncing can be tested without a TTS key.
  */
-async function addDemoSpeech(projectId: string, dialogue = false): Promise<void> {
-  const lines = dialogue ? [
+async function addDemoSpeech(projectId: string, dialogue: boolean | 'labels' = false): Promise<void> {
+  const lines = dialogue === 'labels' ? [
+    'Narrator: Kenzo opens the notebook.',
+    'Kenzo, “I will save a little today.”',
+    'Kenzo writes down the number. Narrator, “Small steps matter.”',
+    '“Kenzo, keep going.”'
+  ] : dialogue ? [
     composeSceneSpeech('Someone knocked at the door.', [{ speaker: 'Gajah whispered', text: 'Who is outside?', emotion: 'whispers' }], false),
     composeSceneSpeech('His father answered quietly.', [{ speaker: 'Father said', text: 'Keep the door closed.', emotion: 'neutral' }], false),
     composeSceneSpeech('They heard the footsteps stop.', [{ speaker: 'Gajah asked', text: 'Did you hear that?', emotion: 'neutral' }], false),
@@ -37,23 +44,24 @@ async function addDemoSpeech(projectId: string, dialogue = false): Promise<void>
   ]
   const b = getBundle(projectId)
   for (const [i, c] of b.clips.entries()) {
-    const text = lines[i % lines.length]
+    const sourceText = lines[i % lines.length]
+    const text = dialogue === 'labels' ? stripSpeakerLabels(sourceText, ['Kenzo']) : sourceText
     const rel = `audio/speech-${i}.wav`
     const abs = assetAbsPath(projectId, rel)
     mkdirSync(dirname(abs), { recursive: true })
     const ps = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${abs.replace(/'/g, "''")}'); $s.Speak('${text}'); $s.Dispose()`
     // stdin must be closed, or PowerShell waits on it and blocks the main process.
-    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    runFixtureTool('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
     const ms = await probeDurationMs(abs)
     const asset = insertAsset({
       projectId,
       clipId: c.id,
       kind: 'audio',
       provider: 'demo',
-      prompt: text,
+      prompt: sourceText,
       localPath: rel,
       durationMs: ms,
-      meta: { words: estimateWordTimings(text, ms / 1000), estimatedTimings: true }
+      meta: { spokenText: text, words: estimateWordTimings(text, ms / 1000), estimatedTimings: true }
     })
     patchClip(c.id, { audioAssetId: asset.id, durationMs: ms + 400 })
   }
@@ -66,7 +74,7 @@ function addDemoOverlays(projectId: string): void {
   const rel = 'overlays/demo-logo.png'
   const abs = assetAbsPath(projectId, rel)
   mkdirSync(dirname(abs), { recursive: true })
-  execFileSync(binPath(ffmpegStatic!), ['-y', '-f', 'lavfi', '-i', 'color=c=0xE4572E:s=360x120', '-frames:v', '1', abs], { windowsHide: true })
+  runFixtureTool(binPath(ffmpegStatic!), ['-y', '-f', 'lavfi', '-i', 'color=c=0xE4572E:s=360x120', '-frames:v', '1', abs], { windowsHide: true })
   const logo = insertAsset({ projectId, kind: 'overlay', provider: 'demo', prompt: 'logo-demo.png', localPath: rel, width: 360, height: 120 })
   const b = getBundle(projectId)
   saveSnapshot({
@@ -105,7 +113,7 @@ function addDemoVideos(projectId: string): void {
     const rel = `videos/demo-${i}.mp4`
     const abs = assetAbsPath(projectId, rel)
     mkdirSync(dirname(abs), { recursive: true })
-    execFileSync(ff, ['-y', '-f', 'lavfi', '-i', `testsrc2=s=1280x720:r=24:d=6`, '-vf', `hue=h=${i * 50}`, '-pix_fmt', 'yuv420p', abs], { windowsHide: true })
+    runFixtureTool(ff, ['-y', '-f', 'lavfi', '-i', `testsrc2=s=1280x720:r=24:d=6`, '-vf', `hue=h=${i * 50}`, '-pix_fmt', 'yuv420p', abs], { windowsHide: true })
     const v = insertAsset({ projectId, clipId: c.id, kind: 'video', provider: 'demo', localPath: rel, durationMs: 6000, width: 1280, height: 720 })
     patchClip(c.id, { videoAssetId: v.id, motionType: 'video', ...(i === 0 ? { videoCamera: 'zoomin', videoStrength: 'kuat' } : {}) })
   }
@@ -145,9 +153,9 @@ function seedDemo(): string {
     const wav = `audio/demo-${i}.wav`
     mkdirSync(dirname(assetAbsPath(p.id, img)), { recursive: true })
     mkdirSync(dirname(assetAbsPath(p.id, wav)), { recursive: true })
-    execFileSync(ff, ['-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080', '-vf', `hue=h=${i * 70}`, '-frames:v', '1', assetAbsPath(p.id, img)], { windowsHide: true })
+    runFixtureTool(ff, ['-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080', '-vf', `hue=h=${i * 70}`, '-frames:v', '1', assetAbsPath(p.id, img)], { windowsHide: true })
     const sec = 3.2 + i * 0.4
-    execFileSync(ff, ['-y', '-f', 'lavfi', '-i', `sine=frequency=${220 + i * 60}:duration=${sec}`, '-ar', '24000', '-ac', '1', assetAbsPath(p.id, wav)], {
+    runFixtureTool(ff, ['-y', '-f', 'lavfi', '-i', `sine=frequency=${220 + i * 60}:duration=${sec}`, '-ar', '24000', '-ac', '1', assetAbsPath(p.id, wav)], {
       windowsHide: true
     })
     const image = insertAsset({ projectId: p.id, clipId: clip.id, kind: 'image', provider: 'demo', localPath: img, width: 1920, height: 1080 })
@@ -166,7 +174,7 @@ function seedDemo(): string {
   })
   const music = 'music/demo.wav'
   mkdirSync(dirname(assetAbsPath(p.id, music)), { recursive: true })
-  execFileSync(ff, ['-y', '-f', 'lavfi', '-i', 'sine=frequency=110:duration=30', '-ar', '44100', assetAbsPath(p.id, music)], { windowsHide: true })
+  runFixtureTool(ff, ['-y', '-f', 'lavfi', '-i', 'sine=frequency=110:duration=30', '-ar', '44100', assetAbsPath(p.id, music)], { windowsHide: true })
   const m = insertAsset({ projectId: p.id, kind: 'music', provider: 'demo', prompt: 'demo-musik.wav', localPath: music, durationMs: 30000 })
   const fresh = getBundle(p.id)
   saveSnapshot({
@@ -181,8 +189,16 @@ function seedDemo(): string {
  * For harness runs: keep painting and timers going while the test window sits behind other windows, so
  * screenshots show the current state. Must run before the app is ready.
  */
+function harnessEnabled(): boolean {
+  return !app.isPackaged && Boolean(process.env.STUDIO_CAPTURE_PLAN) && isolatedHarnessProfile(
+    process.env.STUDIO_USER_DATA,
+    app.getPath('userData'),
+    ['F:\\storybot', 'F:\\Kisara', join(app.getPath('appData'), 'Kisara'), join(app.getPath('appData'), 'Bang Story'), join(app.getPath('appData'), 'Studio Cerita')]
+  )
+}
+
 export function prepareHarness(): void {
-  if (app.isPackaged || !process.env.STUDIO_CAPTURE_PLAN) return
+  if (!harnessEnabled()) return
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
   app.commandLine.appendSwitch('disable-renderer-backgrounding')
   app.commandLine.appendSwitch('disable-background-timer-throttling')
@@ -196,7 +212,7 @@ export function prepareHarness(): void {
  * Never active in a packaged build.
  */
 export function attachDevHarness(win: BrowserWindow): void {
-  if (app.isPackaged) return
+  if (!harnessEnabled()) return
   const log = process.env.STUDIO_LOG
   if (log) {
     win.webContents.on('console-message', (e) => {
@@ -207,7 +223,7 @@ export function attachDevHarness(win: BrowserWindow): void {
   const planPath = process.env.STUDIO_CAPTURE_PLAN
   if (!planPath) return
   let plan: {
-    main?: 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks'
+    main?: 'mockStyleUpload' | 'channelCharacter' | 'speakerLabels' | 'mockFlowBatch' | 'mockFlowProfiles' | 'mockNarrationAudit' | 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks' | 'mockComprehension'
     size?: [number, number]
     exportTo?: string
     /** For main "export": an existing project instead of the seeded demo. */
@@ -242,6 +258,54 @@ export function attachDevHarness(win: BrowserWindow): void {
       try {
         if (step.size) { win.unmaximize(); win.setSize(...step.size) }
         if (step.main === 'seed') demoId = seedDemo()
+        if (step.main === 'mockFlowBatch' && demoId) {
+          for (const clip of getBundle(demoId).clips.slice(1)) patchClip(clip.id, {imageAssetId:null})
+        }
+        if (step.main === 'mockFlowProfiles') {
+          setSettings({imageProvider:'flow2api'});setSecret('flow2api','synthetic-profile-key');recordCheck('flow2api',true,'Fixture lokal')
+          const profiles: {id:string;email:string;routeKey:string;status:string;message:string}[]=[]
+          for (const channel of ['settings:flowSetup','settings:flowStatus','settings:flowProfiles','settings:openFlowProfile']) ipcMain.removeHandler(channel)
+          ipcMain.handle('settings:flowSetup',()=>({accounts:[],workers:[],extensionMode:true}))
+          ipcMain.handle('settings:flowStatus',()=>({ok:true,message:'Fixture lokal',models:['gemini-3.1-flash-image-landscape'],activeAccounts:0,failover:true}))
+          ipcMain.handle('settings:flowProfiles',()=>profiles)
+          ipcMain.handle('settings:openFlowProfile',(_e,email:string)=>{assert.equal(email,'person@example.test');const p={id:'test',email,routeKey:'kisara-test',status:'login',message:'Browser siap. Login Google dengan email person@example.test. Kunci koneksi sudah diisi otomatis.'};profiles.push(p);return p})
+        }
+        if (step.main === 'mockNarrationAudit' && demoId) {
+          const clips = getBundle(demoId).clips
+          for (const clip of clips) patchClip(clip.id, {audioAssetId:null,imageAssetId:null})
+          const voice = insertJob({projectId:demoId,kind:'narration',provider:'gemini'})
+          updateJob(voice.id,{status:'running',progress:0.2,message:'Menyelaraskan rekaman bagian 1/4 dengan Whisper; suara dipasang setelah dipotong per adegan'})
+          const image = insertJob({projectId:demoId,clipId:clips[0].id,kind:'image',provider:'flow2api'})
+          updateJob(image.id,{status:'failed',error:'Worker Flow belum tersambung. Periksa pasangan akun dan profil Chrome.'})
+        }
+        if (step.main === 'mockComprehension') {
+          setSettings({ llmProvider: 'custom', customBaseUrl: 'http://writer.invalid/v1', llmModels: { ...getSettings().llmModels, custom: 'comprehension-fixture' } })
+          setSecret('custom','comprehension-test-key'); recordCheck('custom',true,'Fixture lokal')
+          globalThis.fetch = async (input, init) => {
+            const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+            if (url.hostname !== 'writer.invalid') throw new Error('Network is disabled in this harness fixture')
+            const body = JSON.parse(String(init?.body)), system = body.messages[0].content as string, prompt = body.messages[1].content as string
+            let result: object
+            if (system.includes('You are now the critical editor')) {
+              await sleep(300)
+              const draft = JSON.parse(prompt.split('Read the complete spoken draft:\n')[1]) as {scene:number;narration:string}[]
+              const issue = step.ok === false || draft[0].narration.includes('langsung')
+              result = { issues: issue ? [{scene:1,quote:draft[0].narration,reason:'Jelaskan bahwa hubungan ini bersyarat, bukan akibat otomatis.'}] : [] }
+            } else if (system.includes('Repair only the requested numbered passages')) {
+              const draft = JSON.parse(prompt.split('Current complete draft:\n')[1].split('\n\nReturn ONLY')[0]) as {scene:number;title:string;story:string;narration:string;dialogue:unknown[]}[]
+              const ids = prompt.split('Return ONLY scene numbers: ')[1].split(', ').map(Number)
+              result = { scenes: draft.filter(s=>ids.includes(s.scene)).map(s=>({...s,narration:s.scene===1?'Saham turun tidak otomatis membuat makanan naik. Salah satu jalurnya melalui nilai tukar rupiah.':s.narration})) }
+            } else {
+              result = { title:'Memahami Harga Makan', scenes: [
+                'Modal asing langsung kabur dan membuat makanan naik.',
+                'Jika rupiah melemah, bahan impor bisa membutuhkan lebih banyak rupiah untuk dibeli.',
+                'Biaya bahan dapat memengaruhi harga jual, tetapi bukan satu-satunya faktor.',
+                'Jadi, periksa kurs dan biaya bahan sebelum menyimpulkan penyebab kenaikan harga.'
+              ].map((n,i)=>({sourceScene:i+1,title:'Penjelasan '+(i+1),story:'Ilustrasi bahan dan transaksi yang dibahas.',narration:n,dialogue:[]})) }
+            }
+            return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(result)}}]}),{status:200})
+          }
+        }
         if (step.main === 'mockProductionTools' && demoId) {
           setSettings({ llmProvider: 'custom', customBaseUrl: 'http://writer.invalid/v1', llmModels: { ...getSettings().llmModels, custom: 'production-fixture' } })
           setSecret('custom','production-test-key'); recordCheck('custom',true,'Fixture lokal')
@@ -259,7 +323,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           const source = assetAbsPath(demoId,bundle.assets.find(a=>a.id===bundle.clips[0].imageAssetId)!.localPath)
           const files = ['001 - Utama.png','001 - Cadangan.png','tanpa-nomor.png'].map(name=>{const path=join(fixtureDir,name);writeFileSync(path,readFileSync(source));return path})
           const video = join(fixtureDir,'002 - Gerak.mp4')
-          execFileSync(binPath(ffmpegStatic!),['-y','-v','error','-f','lavfi','-i','testsrc2=s=320x180:r=24','-t','3','-c:v','libx264','-pix_fmt','yuv420p',video],{windowsHide:true,timeout:30000})
+          runFixtureTool(binPath(ffmpegStatic!),['-y','-v','error','-f','lavfi','-i','testsrc2=s=320x180:r=24','-t','3','-c:v','libx264','-pix_fmt','yuv420p',video],{windowsHide:true,timeout:30000})
           dialog.showOpenDialog = async () => ({ canceled:false,filePaths:[...files,video] })
         }
         if (step.main === 'mediaImportChecks' && demoId) {
@@ -298,7 +362,7 @@ export function attachDevHarness(win: BrowserWindow): void {
               const id = `local${generated.size}`, file = join(app.getPath('userData'), `f5-${id}.wav`)
               const text = Buffer.from(body.text).toString('base64')
               const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${file.replace(/'/g, "''")}'); $s.Speak([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${text}'))); $s.Dispose()`
-              execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 45000, stdio: ['ignore', 'ignore', 'pipe'] })
+              runFixtureTool('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 45000, stdio: ['ignore', 'ignore', 'pipe'] })
               generated.set(id, file)
               return json({ job_id: id })
             }
@@ -314,7 +378,7 @@ export function attachDevHarness(win: BrowserWindow): void {
         if (step.main === 'mockF5') {
           setSettings({ defaultTtsProvider: 'f5-hf', f5Space: 'fixture/f5', f5Endpoint: 'infer', f5RefText: 'This is a sample voice recording.', whisperAuto: false })
           const reference = join(app.getPath('userData'), 'f5-reference-fixture.ogg')
-          execFileSync(binPath(ffmpegStatic!), ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=4', '-c:a', 'libopus', '-y', reference], { windowsHide: true })
+          runFixtureTool(binPath(ffmpegStatic!), ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=4', '-c:a', 'libopus', '-y', reference], { windowsHide: true })
           dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [reference] })
           const original = globalThis.fetch.bind(globalThis)
           const generated = new Map<string, string>()
@@ -333,7 +397,7 @@ export function attachDevHarness(win: BrowserWindow): void {
               const file = join(app.getPath('userData'), `f5-${id}.wav`)
               const text = Buffer.from(String(body.data[2]), 'utf8').toString('base64')
               const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${file.replace(/'/g, "''")}'); $s.Speak([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${text}'))); $s.Dispose()`
-              execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 45000, stdio: ['ignore', 'ignore', 'pipe'] })
+              runFixtureTool('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 45000, stdio: ['ignore', 'ignore', 'pipe'] })
               generated.set(id, file)
               return json({ event_id: id })
             }
@@ -477,7 +541,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           const b = getBundle(demoId)
           const image = b.assets.find((a) => a.id === b.clips[0].imageAssetId)!
           const file = join(app.getPath('userData'), 'import-fixture.webp')
-          execFileSync(binPath(ffmpegStatic!), ['-y', '-v', 'error', '-i', assetAbsPath(demoId, image.localPath), '-frames:v', '1', file], { windowsHide: true })
+          runFixtureTool(binPath(ffmpegStatic!), ['-y', '-v', 'error', '-i', assetAbsPath(demoId, image.localPath), '-frames:v', '1', file], { windowsHide: true })
           // The actual IPC importer and preload bridge run; only the OS file dialog is substituted.
           dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] })
         }
@@ -519,7 +583,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           const rel = 'sfx/demo-tone.wav'
           const abs = assetAbsPath(demoId, rel)
           mkdirSync(dirname(abs), { recursive: true })
-          execFileSync(binPath(ffmpegStatic!), ['-y', '-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.6', abs], { windowsHide: true })
+          runFixtureTool(binPath(ffmpegStatic!), ['-y', '-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.6', abs], { windowsHide: true })
           const asset = insertAsset({ projectId: demoId, kind: 'sfx', provider: 'demo', localPath: rel, prompt: 'Efek uji sintetis', durationMs: 600, meta: { author: 'Dev harness', license: 'Audio sintetis untuk pengujian' } })
           const b = getBundle(demoId)
           saveSnapshot({ ...b, project: { ...b.project, editor: { ...b.project.editor, sfx: [{ id: 'demo-fx', assetId: asset.id, start: 1.2, volumeDb: -12, label: 'Efek uji sintetis' }] } } })
@@ -541,6 +605,49 @@ export function attachDevHarness(win: BrowserWindow): void {
         if (step.main === 'videos' && demoId) addDemoVideos(demoId)
         if (step.main === 'speech' && demoId) await addDemoSpeech(demoId)
         if (step.main === 'dialogue' && demoId) await addDemoSpeech(demoId, true)
+        if (step.main === 'mockStyleUpload') {
+          const file = join(app.getAppPath(), 'resources', 'kenzo.png')
+          let calls = 0
+          dialog.showOpenDialog = async () => (++calls === 1 ? { canceled: false, filePaths: [file] } : { canceled: true, filePaths: [] })
+        }
+        if (step.main === 'channelCharacter') {
+          const before = channelCharacterBytes()!
+          assert(before.length > 1000)
+          const oldKey = channelCharacterKey()
+          await importChannelCharacter(join(app.getAppPath(), 'resources', 'kenzo.png'))
+          assert.notEqual(channelCharacterKey(), oldKey)
+          assert(channelCharacterBytes()!.length > 1000)
+          assert(sameReferenceImage(before, channelCharacterBytes()!))
+          assert(!before.equals(channelCharacterBytes()!), 'Fixture must exercise different encodings')
+          assert(!getSettings().channelCharacterReference.includes('Downloads'))
+          const ref = getSettings().channelCharacterReference
+          const invalid = join(app.getPath('userData'), 'invalid-image.txt')
+          writeFileSync(invalid, 'Not an image')
+          await assert.rejects(importChannelCharacter(invalid))
+          assert.equal(getSettings().channelCharacterReference, ref)
+          const styleBefore = channelStyleKey()
+          await importChannelCharacter(join(app.getAppPath(), 'resources', 'kenzo.png'), 'style')
+          assert.notEqual(channelStyleKey(), styleBefore)
+          assert(channelStyleBytes()!.equals(channelCharacterBytes()!))
+          assert(channelStylePrompt(2).includes('image number 2'))
+          assert(channelStylePrompt(2).includes('NPCs'))
+          const styleRef = getSettings().channelStyleReference
+          await assert.rejects(importChannelCharacter(invalid, 'style'))
+          assert.equal(getSettings().channelStyleReference, styleRef)
+          setSettings({ channelStyleEnabled: false })
+          assert.equal(channelStyleBytes(), null)
+          assert.equal(channelStylePrompt(1), '')
+          setSettings({ channelStyleEnabled: true })
+          const differentStyle = join(app.getPath('userData'), 'style-fixture.png')
+          writeFileSync(differentStyle, nativeImage.createFromBuffer(before).resize({ width: 512 }).toPNG())
+          await importChannelCharacter(differentStyle, 'style')
+          assert(!channelStyleBytes()!.equals(channelCharacterBytes()!))
+          assert(!sameReferenceImage(channelStyleBytes()!, channelCharacterBytes()!))
+          if (log) appendFileSync(log, '[qa] REFERENCE PIXEL DEDUP PASS: reencoded PNG matches original; different size/style remains separate\n')
+          if (log) appendFileSync(log, '[qa] CHANNEL STYLE PASS: owned reference, NPC/environment prompt, invalid upload preserved, disabled style omitted\n')
+          if (log) appendFileSync(log, '[qa] CHANNEL CHARACTER PASS: built-in Kenzo, owned uploaded copy, invalid upload preserves selected reference\n')
+        }
+        if (step.main === 'speakerLabels'  && demoId) await addDemoSpeech(demoId, 'labels')
         if (step.main === 'key' && step.provider) {
           setSecret(step.provider, 'dev-harness-fake-key')
           recordCheck(step.provider, step.ok !== false, step.ok === false ? 'Kunci ditolak (uji)' : 'Terhubung (uji)')

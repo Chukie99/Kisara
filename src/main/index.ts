@@ -1,3 +1,6 @@
+import { ensureLocalFlow } from './services/flowLocal'
+import { getSettings } from './settings'
+import { recordCheck } from './secrets'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join, parse } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
@@ -108,6 +111,10 @@ if (!single) {
     registerIpc()
     createWindow()
     resumeJobs()
+    const settings = getSettings()
+    if (settings.imageProvider === 'flow2api') {
+      void ensureLocalFlow(settings.flowBaseUrl).catch((error: Error) => recordCheck('flow2api', false, error.message))
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

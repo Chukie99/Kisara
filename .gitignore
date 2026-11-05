@@ -26,3 +26,6 @@ Thumbs.db
 
 # Resources (too large for git)
 resources/
+
+tools/flow2api/
+tools/flow2api-token-updater/

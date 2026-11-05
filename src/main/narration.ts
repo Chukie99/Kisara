@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { runMediaProcess } from './services/mediaProcess'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -6,7 +6,7 @@ import ffmpegStatic from 'ffmpeg-static'
 import { WHISPER_TIMING, captionNeedsSync, estimateWordTimings } from '@shared/captions'
 import { TTS_WORDS_PER_SECOND, defaultVoiceFor } from '@shared/models'
 import { estimateNarrationMs } from '@shared/script'
-import { narrationNeedsRefresh, narrationSpeed, speechFingerprint, spokenWords, stripVoiceTags } from '@shared/speech'
+import { narrationNeedsRefresh, narrationSpeed, speechFingerprint, spokenWords, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
 import type { Clip, Job, Project, WordTiming } from '@shared/types'
 import { emit } from './events'
 import { runJob, type TaskCtx } from './jobs'
@@ -14,6 +14,7 @@ import { assetAbsPath, binPath, dataDir } from './paths'
 import {
   activeProjectJob,
   clipsOf,
+  charactersOf,
   getAsset,
   getClip,
   getProject,
@@ -53,8 +54,10 @@ function ttsModel(provider: Project['ttsProvider']): string {
   return s.elevenModel
 }
 
+type NarrationClip = Clip & { sourceNarration?: string }
+
 interface Segment {
-  clip: Clip
+  clip: NarrationClip
   file: string
   durationMs: number
   words: WordTiming[]
@@ -63,14 +66,7 @@ interface Segment {
 }
 
 function ffmpeg(args: string[], signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const p = execFile(binPath(ffmpegStatic!), ['-hide_banner', '-nostats', ...args], { windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, _out, stderr) => {
-      if (signal.aborted) return reject(new Error('Dibatalkan'))
-      if (err) return reject(new Error(`FFmpeg gagal: ${String(stderr).split('\n').slice(-4).join(' ').trim()}`))
-      resolve(String(stderr))
-    })
-    signal.addEventListener('abort', () => p.kill('SIGKILL'), { once: true })
-  })
+  return runMediaProcess(binPath(ffmpegStatic!), ['-hide_banner', '-nostats', ...args], { signal, name: 'FFmpeg', maxBuffer: 32 * 1024 * 1024, timeoutMs: 300000 })
 }
 
 async function detectSilences(file: string, signal: AbortSignal): Promise<{ start: number; end: number }[]> {
@@ -90,9 +86,9 @@ async function detectSilences(file: string, signal: AbortSignal): Promise<{ star
 }
 
 /** Groups scenes into takes that fit one request, keeping the script order. */
-function parts(clips: Clip[], provider: Project['ttsProvider']): Clip[][] {
-  const out: Clip[][] = []
-  let cur: Clip[] = []
+function parts(clips: NarrationClip[], provider: Project['ttsProvider']): NarrationClip[][] {
+  const out: NarrationClip[][] = []
+  let cur: NarrationClip[] = []
   let size = 0
   for (const c of clips) {
     const s = provider === 'elevenlabs' || provider === 'f5-hf' || provider === 'f5-local' ? c.narration.length : estimateNarrationMs(c.narration, TTS_WORDS_PER_SECOND[provider]) / 1000
@@ -126,7 +122,7 @@ async function whisperTimes(take: string, words: string[], p: Project, total: nu
   }
 }
 
-async function geminiTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+async function geminiTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
   // A long pause between scenes gives the cutter a clear gap to find.
   const wav = await gemini.speak(group.map((c) => c.narration.trim()).join('\n<long pause>\n'), voice, p.language, ctx.signal, p.editor.voiceDelivery ?? 'dramatic')
   const take = join(tmp, `take-${randomUUID()}.wav`)
@@ -135,20 +131,20 @@ async function geminiTake(p: Project, voice: string, group: Clip[], tmp: string,
 }
 
 /** Speaks the whole group as one take with the user's local Supertonic studio. */
-async function supertonicTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+async function supertonicTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
   // A blank line is a paragraph pause in the studio, which gives the cutter a gap between scenes.
   const take = join(tmp, `take-${randomUUID()}.wav`)
   await supertonic.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, getSettings().supertonicPreset, take, ctx.signal, narrationSpeed(p.editor.narrationSpeed))
   return sliceTake(take, group, p, tmp, ctx, note)
 }
 
-async function f5Take(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
+async function f5Take(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
   const take = join(tmp, `take-${randomUUID()}.wav`)
   await f5.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, take, ctx.signal, progress)
   return sliceTake(take, group, p, tmp, ctx, note)
 }
 
-async function f5LocalTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
+async function f5LocalTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
   const take = join(tmp, `take-${randomUUID()}.wav`)
   await f5Local.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, p.editor.narrationSpeed, take, ctx.signal, progress)
   return sliceTake(take, group, p, tmp, ctx, note)
@@ -182,7 +178,7 @@ function trimToSpeech(
 }
 
 /** Cuts one whole take into per-scene files and times each scene's caption words. */
-async function sliceTake(take: string, group: Clip[], p: Project, tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+async function sliceTake(take: string, group: NarrationClip[], p: Project, tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
   const total = (await probeDurationMs(take)) / 1000
   const silences = await detectSilences(take, ctx.signal)
 
@@ -235,7 +231,7 @@ async function sliceTake(take: string, group: Clip[], p: Project, tmp: string, c
 async function elevenTake(
   p: Project,
   voice: string,
-  group: Clip[],
+  group: NarrationClip[],
   context: { previous?: string; next?: string },
   tmp: string,
   ctx: TaskCtx
@@ -277,11 +273,12 @@ async function elevenTake(
 }
 
 function store(p: Project, s: Segment, voice: string, takeId: string, bytes: Buffer): void {
-  if ((p.ttsProvider === 'supertonic' || p.ttsProvider === 'f5-local') && (speechFingerprint(getProject(p.id)) !== speechFingerprint(p) || getClip(s.clip.id).narration !== s.clip.narration))
+  const sourceNarration = s.clip.sourceNarration ?? s.clip.narration
+  if ((speechFingerprint(getProject(p.id)) !== speechFingerprint(p) || getClip(s.clip.id).narration !== sourceNarration))
     throw new Error('Naskah, suara atau tempo berubah saat narasi dibuat. Coba lagi dengan pengaturan terbaru.')
   if (p.ttsProvider === 'f5-hf') {
     const selected = getProject(p.id)
-    if (selected.ttsProvider !== p.ttsProvider || selected.ttsVoice !== voice || getSettings().f5VoiceId !== voice || getClip(s.clip.id).narration !== s.clip.narration)
+    if (selected.ttsProvider !== p.ttsProvider || selected.ttsVoice !== voice || getSettings().f5VoiceId !== voice || getClip(s.clip.id).narration !== sourceNarration)
       throw new Error('Naskah atau referensi F5 berubah saat suara dibuat. Hasil lama tidak diterapkan; coba lagi.')
   }
   const rel = `audio/${randomUUID()}.wav`
@@ -294,10 +291,10 @@ function store(p: Project, s: Segment, voice: string, takeId: string, bytes: Buf
     kind: 'audio',
     provider: p.ttsProvider,
     model: ttsModel(p.ttsProvider),
-    prompt: s.clip.narration,
+    prompt: sourceNarration,
     localPath: rel,
     durationMs: s.durationMs,
-    meta: { words: s.words, estimatedTimings: s.estimated, voice, take: takeId, speechFingerprint: speechFingerprint(p), ...(p.ttsProvider === 'f5-hf' ? { f5Space: getSettings().f5Space, license: getSettings().f5Space === 'fdrm/masbro-voice' ? 'F5 Indo V2 · CC BY-NC 4.0 (model nonkomersial)' : 'Sesuai lisensi checkpoint di Space F5 pilihanmu' } : {}), ...(s.timedBy ? { timedBy: s.timedBy } : {}) }
+    meta: { spokenText: s.clip.narration, words: s.words, estimatedTimings: s.estimated, voice, take: takeId, speechFingerprint: speechFingerprint(p), ...(p.ttsProvider === 'f5-hf' ? { f5Space: getSettings().f5Space, license: getSettings().f5Space === 'fdrm/masbro-voice' ? 'F5 Indo V2 · CC BY-NC 4.0 (model nonkomersial)' : 'Sesuai lisensi checkpoint di Space F5 pilihanmu' } : {}), ...(s.timedBy ? { timedBy: s.timedBy } : {}) }
   })
   emit.asset(asset)
   // Each piece already carries half of the pause on either side, so the pieces play back as the one take.
@@ -325,7 +322,9 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
     if (p.ttsProvider !== project.ttsProvider || p.ttsVoice !== project.ttsVoice) throw new Error('Pilihan suara berubah saat menunggu antrean. Buat suara lagi dengan pilihan terbaru.')
     const voice = p.ttsVoice || defaultVoiceFor(p.ttsProvider)
     if (p.ttsProvider === 'elevenlabs' && !voice) throw new Error('Pilih suara ElevenLabs dulu di langkah Ide cerita.')
-    const clips = targets.map((c) => getClip(c.id)).filter((c) => c.narration.trim())
+    const speakers = charactersOf(projectId).map(c => c.name)
+    const clips: NarrationClip[] = targets.map((c) => getClip(c.id)).map(c => ({ ...c, sourceNarration: c.narration, narration: stripSpeakerLabels(c.narration, speakers) })).filter(c => c.narration.trim())
+    if (!clips.length) throw new Error('Tidak ada teks ucapan setelah label pembicara dibersihkan.')
     const groups = parts(clips, p.ttsProvider)
     const tmp = join(dataDir(), 'tmp', `narration-${ctx.jobId}`)
     mkdirSync(tmp, { recursive: true })
@@ -336,7 +335,7 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
         const group = groups[g]
         ctx.progress(0.05 + 0.85 * (done / clips.length), p.ttsProvider === 'f5-hf' ? `Menunggu antrean dan suara F5 di Hugging Face · bagian ${g + 1}/${groups.length}` : groups.length > 1 ? `Membuat suara bagian ${g + 1} dari ${groups.length}` : 'Membuat suara narasi')
         const note = (): void =>
-          ctx.progress(0.05 + 0.85 * ((done + group.length * 0.6) / clips.length), 'Menyinkronkan caption dengan Whisper')
+          ctx.progress(0.05 + 0.85 * ((done + group.length * 0.6) / clips.length), `Menyelaraskan rekaman bagian ${g + 1}/${groups.length} dengan Whisper; suara dipasang setelah dipotong per adegan`)
         const segments =
           p.ttsProvider === 'f5-local' ? await f5LocalTake(p, voice, group, tmp, ctx, note, (message) => ctx.progress(0.05 + 0.85 * (done / clips.length), `${message} · bagian ${g + 1}/${groups.length}`)) : p.ttsProvider === 'f5-hf' ? await f5Take(p, voice, group, tmp, ctx, note, (message) => ctx.progress(0.05 + 0.85 * (done / clips.length), `${message} · bagian ${g + 1}/${groups.length}`)) : p.ttsProvider === 'elevenlabs'
             ? await elevenTake(
@@ -388,7 +387,7 @@ export function syncCaptions(projectId: string, mode: 'stale' | 'all' = 'stale')
         ctx.progress(0.03 + 0.95 * (i / targets.length), `Menyinkronkan klip ${i + 1} dari ${targets.length}`)
         const asset = getAsset(getClip(targets[i].id).audioAssetId)
         if (!asset || !captionNeedsSync(asset, mode)) continue
-        const words = spokenWords(asset.prompt ?? targets[i].narration)
+        const words = spokenWords(typeof asset.meta.spokenText === 'string' ? asset.meta.spokenText : asset.prompt ?? targets[i].narration)
         if (!words.length) continue
         const seconds = (asset.durationMs ?? targets[i].durationMs) / 1000
         const timed = await timeScript(assetAbsPath(projectId, asset.localPath), words, project.language, seconds, tmp, ctx.signal)

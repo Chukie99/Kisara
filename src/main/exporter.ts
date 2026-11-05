@@ -21,7 +21,7 @@ import { cameraPerspective, TRANSITIONS, transitionSecOf } from '@shared/motion'
 import { clipCaptionWords, musicSpan, voiceSpan } from '@shared/timeline'
 import { soundSpan } from '@shared/sound'
 import { validateImageFile } from './imageQuality'
-import { anchorOffset, contrastColor, overlayEnd, textEffects } from '@shared/overlays'
+import { anchorOffset, contrastColor, overlayEnd, textEffects, textOverlayFrames } from '@shared/overlays'
 import type { Asset, Clip, ExportOptions, ImageOverlay, Job, ProjectBundle, TextOverlay } from '@shared/types'
 import { emit } from './events'
 import { runJob, type TaskCtx } from './jobs'
@@ -126,25 +126,30 @@ const OVERLAY_STYLES = [
 function overlayEvents(texts: TextOverlay[], total: number, w: number, h: number): string[] {
   const out: string[] = []
   for (const o of texts) {
-    const end = overlayEnd(o, total)
-    if (end <= o.start || !o.text.trim()) continue
+    for (const segment of textOverlayFrames(o, total)) {
+    const { frame } = segment
+    const end = segment.end
+    if (end <= segment.start || !frame.text.trim()) continue
     const px = o.size * h
     const fs = Math.max(8, Math.round(px * POPPINS_CELL))
     const fx = textEffects(o.style, px)
     const style = o.style === 'box' ? 'OvBox' : o.style === 'outline' ? 'OvOutline' : 'OvPlain'
     const tags = [
       `\\an${o.anchor}`,
-      `\\pos(${Math.round(o.x * w)},${Math.round(o.y * h)})`,
+      `\\pos(${Math.round(o.x * w)},${Math.round((o.y + frame.dy) * h)})`,
+      `\\fscx${(frame.scale*100).toFixed(3)}\\fscy${(frame.scale*100).toFixed(3)}`,
+      `\\alpha&H${Math.round((1-frame.opacity)*255).toString(16).padStart(2,'0')}&`,
       '\\q2',
       `\\fs${fs}`,
       o.bold ? '\\fnPoppins\\b1' : '\\fnPoppins Medium\\b0',
       `\\c${assInlineColor(o.color)}`
     ]
-    if (o.style === 'box') tags.push(`\\bord${fx.pad}`, `\\4c${assInlineColor(contrastColor(o.color))}`, '\\4a&H26&')
+    if (o.style === 'box') tags.push('\\3a&HFF&', `\\bord${fx.pad}`, `\\4c${assInlineColor(contrastColor(o.color))}`, `\\4a&H${Math.round((1-0.85*frame.opacity)*255).toString(16).padStart(2,'0')}&`)
     if (o.style === 'outline') tags.push(`\\bord${fx.outline}`, `\\3c${assInlineColor(contrastColor(o.color))}`)
     if (o.style === 'plain') tags.push('\\bord0', `\\shad${fx.shadow}`)
-    const text = escapeAss(o.text).replace(/\r?\n/g, '\\N')
-    out.push(`Dialogue: 2,${assTime(o.start)},${assTime(end)},${style},,0,0,0,,{${tags.join('')}}${text}`)
+    const text = escapeAss(frame.text).replace(/\r?\n/g, '\\N')
+    out.push(`Dialogue: 2,${assTime(segment.start)},${assTime(end)},${style},,0,0,0,,{${tags.join('')}}${text}`)
+    }
   }
   return out
 }
@@ -427,7 +432,7 @@ async function renderProject(ctx: TaskCtx, projectId: string, opts: ExportOption
     const burn = opts.burnCaptions && !!style && chunks.length > 0
     // Overlays are part of the picture, so they are drawn even when captions are left out.
     const overlays = bundle.project.editor.overlays ?? []
-    const texts = overlays.filter((o): o is TextOverlay => o.kind === 'text' && !!o.text.trim() && o.start < total)
+    const texts = overlays.filter((o): o is TextOverlay => o.kind === 'text' && (!!o.text.trim() || !!o.counter) && o.start < total)
     const images = overlays
       .filter((o): o is ImageOverlay => o.kind === 'image' && o.start < total)
       .map((o) => ({ o, asset: assetOf(bundle, o.assetId) }))

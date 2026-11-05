@@ -1,3 +1,8 @@
+import { normalizeFlowVideo } from './services/generatedVideo'
+import { channelCharacterBytes, channelCharacterKey, channelCharacterPrompt, channelStyleBytes, channelStyleKey, channelStylePrompt, sameReferenceImage } from './channelCharacter'
+import { StopOnFailureBatch } from './serialBatch'
+import { ensureLocalFlow } from './services/flowLocal'
+import * as flow2api from './services/flow2api'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -6,13 +11,13 @@ import { sceneCharacters } from '@shared/characters'
 import { compactImagePrompt, imageFingerprint, imageNeedsRefresh } from '@shared/imagePrompts'
 import { sceneSpans } from '@shared/flow'
 import { defaultVoiceFor } from '@shared/models'
-import { narrationSpeed, speechFingerprint, stripVoiceTags } from '@shared/speech'
+import { narrationSpeed, speechFingerprint, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
 import { getImageModel, getVideoModel, imageBody, maxRefs, promptLimit, videoBody, type HfModel } from '@shared/higgsfield'
 import { getStyle } from '@shared/styles'
 import type { AspectRatio, Asset, Character, Clip, CreditEstimate, Job, Project, WordTiming } from '@shared/types'
 import { getDb } from './db'
 import { emit } from './events'
-import { runJob, type TaskCtx } from './jobs'
+import { cancelJob, runJob, type TaskCtx } from './jobs'
 import { assetAbsPath, dataDir } from './paths'
 import {
   activeJobFor,
@@ -122,13 +127,13 @@ async function freePromptLimit(provider: 'cloudflare' | 'huggingface'): Promise<
 }
 
 /** Reference-capable models get the full plan; short prompts reserve identity, wardrobe and framing. */
-function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: string[], limit: number, styleFirst = false): string {
+function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: string[], limit: number, styleFirst = false, styleOverride = false): string {
   const style = getStyle(project.styleId)
   const { scene, avoid } = splitAvoid(clip.visualPrompt)
   // A text-only service gets the short version; the full plan makes it draw a collage of panels.
   if (styleFirst) return compactImagePrompt(project, clip, chars, limit)
   const wardrobe = /^\s*wardrobe\s*:/im.test(scene)
-  const stylePart = `Art style: ${style.prompt}`
+  const stylePart = styleOverride ? null : `Art style: ${style.prompt}`
   const scenePart = `Scene:\n${scene}`
   const charPart = chars.length
     ? `Recurring characters in this scene. Keep each one's body, face, hair and skin exactly as described${refNames.length ? ' and as on their reference sheet' : ''}.` +
@@ -152,7 +157,7 @@ function clipPrompt(project: Project, clip: Clip, chars: Character[], refNames: 
     : [scenePart, charPart, refPart, stylePart, avoidPart, framePart]
   const full = order.filter(Boolean).join('\n\n')
   if (full.length <= limit) return full
-  return compactImagePrompt(project, clip, chars, limit)
+  return styleOverride ? framePart + '\n\n' + full.slice(0, Math.max(0, limit - framePart.length - 2)) : compactImagePrompt(project, clip, chars, limit)
 }
 
 function sheetPrompt(project: Project, c: Character): string {
@@ -292,6 +297,7 @@ function updateJobPayload(jobId: string, payload: HfPayload): void {
 // ---------- public entry points ----------
 
 export function generateClipImage(clipId: string): Job {
+  if (getSettings().imageProvider === 'flow2api') return generateFlowMedia(clipId, 'image')
   const existing = activeJobFor({ clipId }, 'image')
   if (existing) return existing
   const remote = freeImageDraw()
@@ -436,7 +442,70 @@ function generateClipImageRemote(clipId: string, provider: 'cloudflare' | 'huggi
   })
 }
 
+/** Flow has its own serial queue, and never uploads its references to another image provider. */
+function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { gate: StopOnFailureBatch; settingsKey: string }): Job {
+  const target = kind === 'sheet' ? {characterId:id} : {clipId:id}
+  const active = activeJobFor(target, kind)
+  if (active) return active
+  const projectId = kind === 'sheet' ? getCharacter(id).projectId : getClip(id).projectId
+  const job = insertJob({projectId,...target,kind,provider:'flow2api'})
+  emit.job(job)
+  return runJob(job,'flow2api',async ctx=>{
+    const execute = async (): Promise<string> => {
+    const project = getProject(projectId), settings = getSettings()
+    if (batch && batch.settingsKey !== flowBatchSettings(project)) throw new Error('Pengaturan akun atau rasio berubah saat antrean berjalan. Antrean dihentikan; mulai lagi untuk gambar yang belum siap.')
+    const clip = kind === 'sheet' ? null : getClip(id)
+    const character = kind === 'sheet' ? getCharacter(id) : null
+    const chars = clip ? sceneCharacters(clip, charactersOf(projectId)) : []
+    const refs = kind === 'video' ? [getAsset(clip!.imageAssetId)] : chars.map(c=>getAsset(c.sheetAssetId)).filter(Boolean).slice(0,3)
+    if (kind === 'video' && !refs[0]) throw new Error('Buat gambar adegan dulu sebelum membuat video Flow.')
+    const identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey()]) : ''
+    const identity = kind === 'image' ? channelCharacterBytes() : null
+    const style = kind === 'image' ? channelStyleBytes() : null
+    const primary: Buffer[] = identity ? [identity] : []
+    let styleNumber = 0
+    if (style) {
+      if (identity && sameReferenceImage(identity, style)) styleNumber = 1
+      else { primary.push(style); styleNumber = primary.length }
+    }
+    refs.splice(3 - primary.length)
+    const images: Buffer[] = [...primary, ...refs.filter((a):a is Asset=>!!a).map(a=>readFileSync(assetAbsPath(projectId,a.localPath)))]
+    if (images.some(b=>b.length>20*1024*1024)) throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
+    const prompt = kind === 'sheet' ? sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : (clip!.videoPrompt.trim() || 'Animate the characters and environment subtly. Preserve the exact first frame and art style.') + ' No background music, no soundtrack or spoken dialogue.'
+    const fingerprint = clip ? imageFingerprint(project,clip,chars) : ''
+    ctx.progress(.2,settings.flowImageTransport==='browser'?(kind==='video'?'Menganimasikan gambar melalui Flow di Chrome…':'Membuat gambar melalui halaman Flow di Chrome…'):kind==='video'?'Flow sedang membuat gerak dari gambar awal…':'Flow sedang membuat gambar. Akun dipilih oleh backend lokal…')
+    await ensureLocalFlow(settings.flowBaseUrl)
+    ctx.signal.throwIfAborted()
+    const raw = await flow2api.generate(kind==='video'?'video':'image',prompt,project.aspectRatio,images,ctx.signal)
+    const bytes = kind==='video'?await normalizeFlowVideo(raw,ctx.signal):await normalizeGeneratedImage(raw)
+    ctx.signal.throwIfAborted()
+    ctx.progress(.88,'Memeriksa dan menyimpan hasil Flow…')
+    const rel = saveFile(projectId,kind==='video'?'video':'images',kind==='video'?'.mp4':bytes[0]===0xff?'.jpg':'.png',bytes)
+    const abs = assetAbsPath(projectId,rel), size=await probeSize(abs)
+    const durationMs=kind==='video'?await probeDurationMs(abs):null
+    if(kind==='video' && (!durationMs || durationMs<100))throw new Error('Video Flow tidak berisi durasi yang valid.')
+    const asset=insertAsset({projectId,...target,kind:kind==='video'?'video':'image',provider:'flow2api',model:settings.flowImageTransport==='browser'?(kind==='video'?(settings.flowVideoInputMode==='frames'?'flow-browser-start-frame':'flow-browser-image-to-video'):'flow-browser-nano-banana-2.1'):flow2api.modelForAspect(kind==='video'?settings.flowVideoModel:settings.flowImageModel,project.aspectRatio),prompt,localPath:rel,width:size?.width??null,height:size?.height??null,durationMs,meta:clip?{imageFingerprint:fingerprint,channelCharacterKey:identityKey}:{}})
+    emit.asset(asset)
+    if (kind==='sheet') {
+      if (sheetPrompt(getProject(projectId),getCharacter(id))!==prompt) throw new Error('Pemeran atau gaya berubah saat Flow bekerja. Hasil disimpan di riwayat.')
+      setCharacterSheet(id,asset.id);emit.character({characterId:id,patch:{sheetAssetId:asset.id}})
+    } else {
+      const current=getClip(id)
+      if (kind === 'image' && JSON.stringify([channelCharacterKey(), channelStyleKey()]) !== identityKey) throw new Error('Karakter atau gaya visual berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
+      if (imageFingerprint(getProject(projectId),current,sceneCharacters(current,charactersOf(projectId)))!==fingerprint || (kind==='video'&&(current.imageAssetId!==clip!.imageAssetId||current.videoPrompt!==clip!.videoPrompt)))throw new Error('Adegan berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
+      const patch=kind==='image'?{imageAssetId:asset.id}:{videoAssetId:asset.id,motionType:'video' as const,mediaInMs:0}
+      patchClip(id,patch);emit.clip({clipId:id,patch})
+      if(kind==='image'&&(!project.coverAssetId||clipsOf(projectId)[0]?.id===id))touchProject(projectId,{coverAssetId:asset.id})
+    }
+    touchProject(projectId)
+    return asset.id
+    }
+    return batch ? batch.gate.run(ctx.signal, () => cancelJob(ctx.jobId), execute) : execute()
+  })
+}
+
 export function generateCharacterSheet(characterId: string): Job {
+  if (getSettings().imageProvider === 'flow2api') return generateFlowMedia(characterId, 'sheet')
   const existing = activeJobFor({ characterId }, 'sheet')
   if (existing) return existing
   // A free service cannot take reference images, so it draws a plain portrait instead. That portrait is the
@@ -458,6 +527,7 @@ export function generateCharacterSheet(characterId: string): Job {
 }
 
 export function generateClipVideo(clipId: string): Job {
+  if (getSettings().imageProvider === 'flow2api') return generateFlowMedia(clipId, 'video')
   const existing = activeJobFor({ clipId }, 'video')
   if (existing) return existing
   const clip = getClip(clipId)
@@ -495,7 +565,8 @@ export function generateClipTts(clipId: string): Job {
     const fresh = getClip(clipId)
     const p = getProject(fresh.projectId)
     if (p.ttsProvider !== project.ttsProvider || p.ttsVoice !== project.ttsVoice) throw new Error('Pilihan suara berubah saat menunggu antrean. Coba lagi dengan pilihan terbaru.')
-    const text = fresh.narration.trim()
+    const sourceText = fresh.narration.trim()
+    const text = stripSpeakerLabels(sourceText, charactersOf(p.id).map(c => c.name))
     if (!text) throw new Error('Naskah klip ini masih kosong')
     ctx.progress(0.2, 'Membuat suara')
     let rel: string
@@ -528,9 +599,10 @@ export function generateClipTts(clipId: string): Job {
       words = estimateWordTimings(stripVoiceTags(text), audioMs / 1000)
       estimated = true
     }
-    if (p.ttsProvider === 'f5-hf' && (getProject(p.id).ttsVoice !== voice || getProject(p.id).ttsProvider !== 'f5-hf' || getSettings().f5VoiceId !== voice || getClip(clipId).narration.trim() !== text))
+    if (p.ttsProvider === 'f5-hf' && (getProject(p.id).ttsVoice !== voice || getProject(p.id).ttsProvider !== 'f5-hf' || getSettings().f5VoiceId !== voice || getClip(clipId).narration.trim() !== sourceText))
       throw new Error('Naskah atau referensi F5 berubah saat suara dibuat. Hasil belum diterapkan; coba lagi.')
-    if ((p.ttsProvider === 'supertonic' || p.ttsProvider === 'f5-local') && (speechFingerprint(getProject(p.id)) !== speechFingerprint(p) || getClip(clipId).narration.trim() !== text))
+    ctx.signal.throwIfAborted()
+    if (speechFingerprint(getProject(p.id)) !== speechFingerprint(p) || getClip(clipId).narration.trim() !== sourceText)
       throw new Error('Naskah, suara atau tempo berubah saat narasi dibuat. Hasil belum diterapkan; coba lagi.')
     const asset = insertAsset({
       projectId: p.id,
@@ -538,10 +610,10 @@ export function generateClipTts(clipId: string): Job {
       kind: 'audio',
       provider: p.ttsProvider,
       model: p.ttsProvider === 'gemini' ? getSettings().geminiTtsModel : p.ttsProvider === 'supertonic' ? 'supertonic-3' : p.ttsProvider === 'f5-local' ? 'F5 Indonesia lokal' : p.ttsProvider === 'f5-hf' ? `F5-TTS · ${getSettings().f5Space}` : getSettings().elevenModel,
-      prompt: text,
+      prompt: sourceText,
       localPath: rel,
       durationMs: audioMs,
-      meta: { words, estimatedTimings: estimated, voice, speechFingerprint: speechFingerprint(p) }
+      meta: { spokenText: text, words, estimatedTimings: estimated, voice, speechFingerprint: speechFingerprint(p) }
     })
     emit.asset(asset)
     const durationMs = Math.max(1500, audioMs + 400)
@@ -609,10 +681,28 @@ export function storyExport(projectId: string): StoryExport {
  * Draws the pictures the project still needs. With `mode: 'all'` every picture is drawn again, which is what
  * the user wants after changing the art style.
  */
+function flowBatchSettings(project: Project): string {
+  const settings = getSettings()
+  return JSON.stringify([settings.imageProvider, settings.flowImageTransport, settings.flowBaseUrl, settings.flowBrowserAccountId, project.aspectRatio, channelCharacterKey(), channelStyleKey()])
+}
+
 export function generateMissingImages(projectId: string, mode: 'missing' | 'all' = 'missing'): Job[] {
   repairCharacterLinks(projectId)
   const jobs: Job[] = []
   const project = getProject(projectId)
+  const settings = getSettings()
+  if (settings.imageProvider === 'flow2api' && settings.flowImageTransport === 'browser') {
+    if (!['16:9','9:16'].includes(project.aspectRatio)) throw new Error('Pilih rasio proyek 16:9 atau 9:16 sebelum membuat gambar Flow.')
+    if (unfinishedJobs().some(j => j.project_id === projectId && j.provider === 'flow2api')) throw new Error('Tunggu atau hentikan antrean Flow yang masih berjalan sebelum memulai lagi.')
+    const characters = charactersOf(projectId)
+    const pending = clipsOf(projectId).filter(clip => {
+      const asset = getAsset(clip.imageAssetId)
+      if (mode === 'all' || imageNeedsRefresh(asset, project, clip, sceneCharacters(clip, characters))) return true
+      try { if (asset) validateImageFile(assetAbsPath(projectId, asset.localPath)); return false } catch { return true }
+    })
+    const batch = { gate: new StopOnFailureBatch(), settingsKey: flowBatchSettings(project) }
+    return pending.map(clip => generateFlowMedia(clip.id, 'image', batch))
+  }
   const model = getImageModel(project.imageModel)
   // Higgsfield needs a 3-view sheet for its reference images; a free service draws a plain portrait, which is
   // the identity reference the Colab notebook uses. Either way every character seen on screen gets one.
@@ -637,6 +727,10 @@ export function generateMissingImages(projectId: string, mode: 'missing' | 'all'
 export function generateMissingVideos(projectId: string): Job[] {
   const clips = clipsOf(projectId)
   if (clips.some((c) => !c.imageAssetId)) throw new Error('Buat gambar semua klip dulu sebelum menjadikannya video.')
+  if (getSettings().imageProvider === 'flow2api') {
+    const batch = { gate: new StopOnFailureBatch(), settingsKey: flowBatchSettings(getProject(projectId)) }
+    return clips.filter(c => !c.videoAssetId).map(c => generateFlowMedia(c.id, 'video', batch))
+  }
   return clips.filter((c) => !c.videoAssetId).map((c) => generateClipVideo(c.id))
 }
 
@@ -690,7 +784,7 @@ export async function estimateCredits(
   resolution?: string | null
 ): Promise<CreditEstimate | null> {
   // Only Higgsfield bills in credits; the other image services are free.
-  if (kind === 'image' && getSettings().imageProvider !== 'higgsfield') return null
+  if (getSettings().imageProvider === 'flow2api' || (kind === 'image' && getSettings().imageProvider !== 'higgsfield')) return null
   const model = kind === 'image' ? getImageModel(modelId) : getVideoModel(modelId)
   const body =
     kind === 'image'

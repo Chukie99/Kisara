@@ -13,7 +13,7 @@ import {
   type CaptionChunk
 } from '@shared/captions'
 import { cameraAt, cameraCss, transitionSecOf } from '@shared/motion'
-import { anchorOffset, contrastColor, overlayVisible, textEffects } from '@shared/overlays'
+import { anchorOffset, contrastColor, overlayVisible, textEffects, textOverlayFrame } from '@shared/overlays'
 import type { AspectRatio, Asset, EditorSettings, Overlay } from '@shared/types'
 import { IconButton, cx } from '../../../components/ui'
 import { timecode } from '../../../lib/format'
@@ -151,7 +151,7 @@ const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
  * One logo or text drawn over the preview at the same spot the export uses. While the Overlay tab is open
  * it can be picked and dragged; otherwise it ignores the mouse so clicks still play and pause.
  */
-function OverlayItem({ o, asset, box, editable }: { o: Overlay; asset: Asset | null; box: { w: number; h: number }; editable: boolean }) {
+function OverlayItem({ o, asset, box, editable, time, total }: { time: number; total: number; o: Overlay; asset: Asset | null; box: { w: number; h: number }; editable: boolean }) {
   const selected = useOverlayUi((s) => s.selectedId === o.id)
   const select = useOverlayUi((s) => s.select)
   const drag = useRef<{ px: number; py: number; x: number; y: number } | null>(null)
@@ -197,6 +197,7 @@ function OverlayItem({ o, asset, box, editable }: { o: Overlay; asset: Asset | n
     )
   }
 
+  const frame = textOverlayFrame(o, time, total)
   const fs = o.size * box.h
   const fx = textEffects(o.style, fs)
   const contrast = contrastColor(o.color)
@@ -206,6 +207,9 @@ function OverlayItem({ o, asset, box, editable }: { o: Overlay; asset: Asset | n
       className={cx('select-none', ring)}
       style={{
         ...place,
+        opacity: frame.opacity,
+        transform: place.transform + ` translateY(${frame.dy * box.h}px) scale(${frame.scale})`,
+        transformOrigin: `${ax*100}% ${ay*100}%`,
         fontFamily: 'Poppins, sans-serif',
         fontWeight: o.bold ? 700 : 500,
         fontSize: fs,
@@ -218,7 +222,7 @@ function OverlayItem({ o, asset, box, editable }: { o: Overlay; asset: Asset | n
         ...(o.style === 'plain' ? { textShadow: `${fx.shadow}px ${fx.shadow}px 0 rgba(0, 0, 0, 0.56)` } : {})
       }}
     >
-      {o.text}
+      {frame.text}
     </div>
   )
 }
@@ -329,13 +333,13 @@ export function Player({
         {shown
           .filter((o) => o.kind === 'image')
           .map((o) => (
-            <OverlayItem key={o.id} o={o} asset={o.kind === 'image' ? (assets[o.assetId] ?? null) : null} box={box} editable={editOverlays} />
+            <OverlayItem key={o.id} o={o} asset={o.kind === 'image' ? (assets[o.assetId] ?? null) : null} box={box} editable={editOverlays} time={viewT} total={total} />
           ))}
         <Caption chunks={chunks} t={viewT} editor={editor} width={box.w} height={box.h} />
         {shown
           .filter((o) => o.kind === 'text')
           .map((o) => (
-            <OverlayItem key={o.id} o={o} asset={null} box={box} editable={editOverlays} />
+            <OverlayItem key={o.id} o={o} asset={null} box={box} editable={editOverlays} time={viewT} total={total} />
           ))}
         {!items.length && <div className="flex size-full items-center justify-center text-paper">Belum ada klip</div>}
         {audition && win && (

@@ -1,3 +1,10 @@
+import { importChannelCharacter, channelCharacterPreview, channelStylePreview } from './channelCharacter'
+import { flowProfiles, openFlowProfile } from './services/flowProfiles'
+import { ensureLocalFlow } from './services/flowLocal'
+import * as flow2api from './services/flow2api'
+import { planContent } from './contentPlan'
+import type { ContentFormat } from '@shared/contentFormat'
+import { brainstorm } from './brainstorm'
 import { prepareMediaImport, applyMediaImport, discardMediaImport } from './mediaImport'
 import type { MediaImportChoice } from '@shared/production'
 import { reviewScript } from './scriptReview'
@@ -62,7 +69,7 @@ import {
   touchProject,
   updateAssetMeta
 } from './repo'
-import { clearSecret, keyStatuses, recordCheck, revealSecret, setSecret } from './secrets'
+import { clearSecret, keyStatuses, recordCheck, revealSecret, requireSecret, setSecret } from './secrets'
 import { dropCache, getSettings, setSettings } from './settings'
 import { probeDurationMs, probeSize } from './services/audio'
 import * as cloudflare from './services/cloudflare'
@@ -100,6 +107,7 @@ function handle(channel: string, fn: Handler): void {
 async function testProvider(provider: ApiProvider, key?: string): Promise<KeyTestResult> {
   if (provider === 'higgsfield') return hf.testCredentials(key)
   if (provider === 'elevenlabs') return eleven.testKey(key)
+  if (provider === 'flow2api') return flow2api.status()
   if (provider === 'cloudflare') return cloudflare.testKey(key)
   if (provider === 'huggingface') return huggingface.testKey(key)
   if (provider === 'freesound') return freesound.testKey(key)
@@ -115,12 +123,20 @@ function defaultExportFolder(): string {
  * waits for the one before it, so the user can press one button and walk away. Steps that have nothing to do
  * (a script that already exists, a project with no Whisper model) are skipped rather than failing the run.
  */
+async function checkFlowReady(kind: 'image'|'video'): Promise<void> {
+  const settings = getSettings()
+  if (settings.imageProvider !== 'flow2api') return
+  await ensureLocalFlow(settings.flowBaseUrl)
+  await flow2api.assertFlowReady(kind)
+}
+
 async function runPipeline(projectId: string): Promise<void> {
   const bundle = getBundle(projectId)
   if (!bundle.clips.some((c) => c.narration.trim())) await runScript(projectId)
   const planned = await runVisuals(projectId, 'missing')
   emit.production(planned)
   // The Hugging Face queue serializes requests even when jobs are submitted together.
+  await checkFlowReady('image')
   const imageJobs = generateMissingImages(projectId)
   await Promise.all(imageJobs.map((j) => completedJob(j.id)))
   // A project with nothing left to voice, or nothing to time, is not an error here.
@@ -149,11 +165,14 @@ export function registerIpc(): void {
   handle('projects:duplicate', (id: string) => duplicateProject(id))
 
   handle('story:script', (projectId: string) => runScript(projectId))
+  handle('story:openScriptDraft', (projectId: string) => runScript(projectId, true))
   handle('story:scriptStatus', (projectId: string) => scriptStatus(projectId))
   handle('story:cancelScript', (projectId: string) => cancelScript(projectId))
   handle('story:reviewScript', (projectId: string) => reviewScript(projectId))
   handle('story:refineScript', (projectId: string) => refineScript(projectId))
   // One fresh topic for a category, for the idea box on the home screen.
+  handle('story:planContent', (synopsis: string, format: ContentFormat, language: string) => planContent(synopsis,format,language))
+  handle('story:brainstorm', (category: string, language: string, direction?: string, previous?: string[], format?: ContentFormat) => brainstorm(category,language,direction,previous,format))
   handle('story:idea', (category: string, language: string) => generateIdea(category, language))
   // A YouTube link is read (captions first, local Whisper as a fallback) and distilled into a fresh idea.
   handle('story:fromVideo', (url: string, language: string, options?: SourceOptions) => ideaFromVideo(url, language, options))
@@ -203,8 +222,8 @@ export function registerIpc(): void {
   handle('generate:clipVideo', (clipId: string) => generateClipVideo(clipId))
   handle('generate:clipTts', (clipId: string) => generateClipTts(clipId))
   handle('generate:characterSheet', (characterId: string) => generateCharacterSheet(characterId))
-  handle('generate:missingImages', (projectId: string, mode?: 'missing' | 'all') => generateMissingImages(projectId, mode === 'all' ? 'all' : 'missing'))
-  handle('generate:missingVideos', (projectId: string) => generateMissingVideos(projectId))
+  handle('generate:missingImages', async (projectId: string, mode?: 'missing' | 'all') => { await checkFlowReady('image'); return generateMissingImages(projectId, mode === 'all' ? 'all' : 'missing') })
+  handle('generate:missingVideos', async (projectId: string) => { await checkFlowReady('video'); return generateMissingVideos(projectId) })
   handle('generate:missingTts', (projectId: string) => generateMissingTts(projectId))
   handle('generate:narration', (projectId: string, mode: 'missing' | 'all') => generateNarration(projectId, mode === 'all' ? 'all' : 'missing'))
   handle('generate:syncCaptions', (projectId: string, mode?: 'stale' | 'all') => syncCaptions(projectId, mode === 'all' ? 'all' : 'stale'))
@@ -407,6 +426,20 @@ export function registerIpc(): void {
     return asset
   })
 
+  handle('settings:channelStylePreview', () => channelStylePreview())
+  handle('settings:importChannelStyle', async () => {
+    const result = await dialog.showOpenDialog({ title: 'Upload referensi gaya visual', properties: ['openFile'], filters: [{ name: 'Referensi gaya', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
+    if (result.canceled || !result.filePaths[0]) return null
+    await importChannelCharacter(result.filePaths[0], 'style')
+    return getSettings()
+  })
+  handle('settings:channelCharacterPreview', () => channelCharacterPreview())
+  handle('settings:importChannelCharacter', async () => {
+    const result = await dialog.showOpenDialog({ title: 'Upload karakter utama channel', properties: ['openFile'], filters: [{ name: 'Gambar karakter', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
+    if (result.canceled || !result.filePaths[0]) return null
+    await importChannelCharacter(result.filePaths[0])
+    return getSettings()
+  })
   handle('settings:get', () => getSettings())
   handle('settings:set', (patch: Partial<AppSettings>) => setSettings(patch))
   handle('settings:keys', () => keyStatuses())
@@ -446,6 +479,37 @@ export function registerIpc(): void {
   handle('settings:revealKey', (provider: ApiProvider) => revealSecret(provider))
   handle('settings:testWriter', () => llm.testWriter())
   // Cloudflare needs an account id beside the token, so it is saved and checked in one step.
+  handle('settings:flowProfiles', () => flowProfiles())
+  handle('settings:openFlowProfile', (email: string) => openFlowProfile(email))
+  handle('settings:flowSetup', () => flow2api.flowSetup())
+  handle('settings:inspectFlowBrowser', (id: number) => flow2api.inspectFlowBrowser(id))
+  handle('settings:resumeFlowGeneration', () => flow2api.resumeFlowGeneration())
+  handle('settings:pairFlowRoute', (id: number, route: string) => flow2api.pairFlowRoute(id, route))
+  handle('settings:flowStatus', async () => { await ensureLocalFlow(getSettings().flowBaseUrl); return flow2api.status() })
+  handle('settings:setFlow2Api', async (baseUrl: string, key: string) => {
+    const base = flow2api.flowBase(baseUrl)
+    const clean = key.trim() || requireSecret('flow2api')
+    await ensureLocalFlow(base)
+    const result = await flow2api.status(base, clean)
+    setSettings({ flowBaseUrl: base })
+    if (key.trim()) setSecret('flow2api', clean)
+    recordCheck('flow2api', result.ok, result.message)
+    return result
+  })
+  handle('settings:connectFlowLocal', async () => {
+    const configPath = join(app.getAppPath(), 'tools', 'flow2api', 'config', 'setting.toml')
+    let config: string
+    try { config = readFileSync(configPath, 'utf8') } catch { throw new Error('Konfigurasi Flow2API lokal tidak ditemukan. Isi alamat server dan API key secara manual.') }
+    const key = config.match(/^api_key\s*=\s*"([^"\r\n]+)"/m)?.[1]
+    if (!key) throw new Error('API key server lokal belum tersedia.')
+    const base = 'http://127.0.0.1:8765'
+    await ensureLocalFlow(base)
+    const result = await flow2api.status(base, key)
+    setSecret('flow2api', key)
+    setSettings({ flowBaseUrl: base, imageProvider: 'flow2api' })
+    recordCheck('flow2api', true, result.message)
+    return result
+  })
   handle('settings:setCloudflare', async (accountId: string, key: string) => {
     const account = accountId.trim()
     if (!account) throw new Error('Account ID Cloudflare masih kosong')

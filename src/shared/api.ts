@@ -1,3 +1,6 @@
+import type { FlowBrowserInspection, FlowProfile, FlowSetup } from './production'
+import type { ContentFormat, FormatPlan } from './contentFormat'
+import type { BrainstormIdea } from './brainstorm'
 import type { ScriptAssessment, MediaImportPlan, MediaImportChoice } from './production'
 import type {
   ApiProvider,
@@ -43,9 +46,12 @@ export interface StudioApi {
     duplicate(id: string): Promise<ProjectSummary>
   }
   story: {
+    planContent(synopsis: string, format: ContentFormat, language: string): Promise<FormatPlan>
+    brainstorm(category: string, language: string, direction?: string, previous?: string[], format?: ContentFormat): Promise<BrainstormIdea[]>
     reviewScript(projectId: string): Promise<ScriptAssessment>
     visualStatus(projectId: string): Promise<ScriptProgress | null>
     cancelVisuals(projectId: string): Promise<void>
+    openScriptDraft(projectId: string): Promise<ProjectBundle>
     scriptStatus(projectId: string): Promise<ScriptProgress | null>
     cancelScript(projectId: string): Promise<void>
     exportFlow(projectId: string, format: 'txt' | 'docx', options?: FlowExportOptions): Promise<string | null>
@@ -115,6 +121,10 @@ export interface StudioApi {
     add(projectId: string, hit: SfxHit): Promise<Asset>
   }
   settings: {
+    importChannelStyle(): Promise<AppSettings | null>
+    channelStylePreview(): Promise<string | null>
+    importChannelCharacter(): Promise<AppSettings | null>
+    channelCharacterPreview(): Promise<string | null>
     get(): Promise<AppSettings>
     set(patch: Partial<AppSettings>): Promise<AppSettings>
     keys(): Promise<KeyStatus[]>
@@ -127,6 +137,15 @@ export interface StudioApi {
     /** Cloudflare stores an account id beside its token, so both are saved and checked together. */
     setCloudflare(accountId: string, key: string): Promise<KeyTestResult>
     /** A Hugging Face Space is named beside its optional token, so both are saved and checked together. */
+    setFlow2Api(baseUrl: string, key: string): Promise<KeyTestResult>
+    connectFlowLocal(): Promise<KeyTestResult>
+    flowProfiles(): Promise<FlowProfile[]>
+    openFlowProfile(email: string): Promise<FlowProfile>
+    flowSetup(): Promise<FlowSetup>
+    inspectFlowBrowser(accountId: number): Promise<FlowBrowserInspection>
+    resumeFlowGeneration(): Promise<FlowSetup>
+    pairFlowRoute(accountId: number, routeKey: string): Promise<FlowSetup>
+    flowStatus(): Promise<{ok:boolean;message:string;models:string[];activeAccounts:number;failover:boolean}>
     setHuggingFace(space: string, key: string): Promise<KeyTestResult>
     testKey(provider: ApiProvider): Promise<KeyTestResult>
     /** Sends only a fixed short fictional prompt to the selected writer. */

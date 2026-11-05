@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { runMediaProcess } from './services/mediaProcess'
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { cpus } from 'node:os'
@@ -133,15 +133,8 @@ export function openModelFolder(): void {
 /** Whisper's language codes differ from ours only for Javanese. */
 const whisperLanguage = (code: string): string => (code === 'jv' ? 'jw' : code)
 
-function run(file: string, args: string[], signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = execFile(file, args, { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }, (err, _out, stderr) => {
-      if (signal?.aborted) return reject(new Error('Dibatalkan'))
-      if (err) return reject(new Error(`Whisper gagal: ${String(stderr).trim().split('\n').slice(-3).join(' ')}`))
-      resolve()
-    })
-    signal?.addEventListener('abort', () => p.kill('SIGKILL'), { once: true })
-  })
+async function run(file: string, args: string[], signal?: AbortSignal): Promise<void> {
+  await runMediaProcess(file, args, { signal, name: 'Pemrosesan caption', maxBuffer: 64 * 1024 * 1024, timeoutMs: 1800000 })
 }
 
 type Token = { text: string; t_dtw?: number }

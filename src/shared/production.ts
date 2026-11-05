@@ -24,3 +24,28 @@ export interface MediaImportPlan {
   rows: MediaImportRow[]
 }
 export interface MediaImportChoice { fileId: string; clipId: string | null }
+export interface FlowSetup {
+  browserFramesVersion?: number
+  browserMediaVersion?: number
+  generationPause?: { code: 'unusual_activity' | 'uncertain_result'; pausedAt: number; retryAllowed?: boolean }
+  accounts: { id: number; email: string; routeKey: string; workerConnected: boolean; active: boolean; imageEnabled: boolean }[]
+  workers: { routeKey: string; label: string }[]
+  extensionMode: boolean
+}
+
+export interface FlowProfile {
+  id: string
+  email: string
+  routeKey: string
+  status: 'starting' | 'login' | 'ready' | 'closed' | 'error'
+  message: string
+}
+
+export interface FlowBrowserInspection {
+  host: string
+  projectOpen: boolean
+  blocked: boolean
+  fields: { tag: string; role: string; label: string; placeholder: string }[]
+  buttons: { label: string; text: string; disabled: boolean }[]
+  options: string[]
+}

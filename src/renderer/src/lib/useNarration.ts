@@ -17,6 +17,7 @@ export function useNarration(): {
   stale: number
   voiced: number
   start(): Promise<void>
+  cancel(): Promise<void>
 } {
   const project = useProject((s) => s.project)
   const clips = useProject((s) => s.clips)
@@ -56,6 +57,7 @@ export function useNarration(): {
     message: job?.message ?? null,
     stale: clips.filter(outdated).length,
     voiced,
-    start
+    start,
+    cancel: async () => { if (job && isRunning(job)) { try { await window.api.generate.cancel(job.id) } catch (e) { toast('error', errorText(e)) } } }
   }
 }

@@ -1,9 +1,10 @@
+import type { ContentFormat, FormatPlan } from './contentFormat'
 import type { ScriptAssessment } from './production'
 export type ProjectStatus = 'draft' | 'script' | 'storyboard' | 'editing' | 'exported'
 export type AspectRatio = '16:9' | '9:16'
 export type TtsProvider = 'gemini' | 'elevenlabs' | 'supertonic' | 'f5-hf' | 'f5-local'
 /** Which service draws clip images: Higgsfield (credits), Cloudflare (free quota) or a Hugging Face Space. */
-export type ImageProvider = 'higgsfield' | 'cloudflare' | 'huggingface'
+export type ImageProvider = 'higgsfield' | 'cloudflare' | 'huggingface' | 'flow2api'
 export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom'
 export type ApiProvider =
   | 'higgsfield'
@@ -15,6 +16,7 @@ export type ApiProvider =
   | 'cloudflare'
   | 'huggingface'
   | 'freesound'
+  | 'flow2api'
 /** Where a live model list comes from: an LLM provider, or a TTS catalog. */
 export type ModelSource = LlmProvider | 'gemini-tts' | 'elevenlabs'
 export type MotionType = 'camera' | 'video'
@@ -33,6 +35,9 @@ export type CameraPresetId =
   | 'handheld'
   | 'shake'
   | 'static'
+  | 'pushhold'
+  | 'pullhold'
+  | 'drift'
 export type MotionStrength = 'halus' | 'sedang' | 'kuat'
 export type TransitionId = 'cut' | 'fade' | 'slideleft' | 'slideright' | 'slideup' | 'zoomin' | 'wipeleft' | 'circleopen' | 'blur' | 'squeezev'
 export type CaptionStyleId = 'karaoke' | 'tebal' | 'minimal' | 'subtitle' | 'none'
@@ -42,6 +47,7 @@ export type CaptionSize = 'kecil' | 'sedang' | 'besar'
 export type Step = 1 | 2 | 3 | 4
 
 export interface ScriptProgress {
+  draftAvailable?: boolean
   projectId: string
   status: 'running' | 'done' | 'failed' | 'canceled'
   completed: number
@@ -50,7 +56,11 @@ export interface ScriptProgress {
 }
 
 export interface EditorSettings {
+  contentFormat?: ContentFormat
+  durationMode?: 'auto' | 'manual'
+  formatPlan?: FormatPlan
   scriptAssessment?: ScriptAssessment
+  scriptReviewPending?: string
   storyBrief?: { idea: string; fictional: boolean; sourceTitle?: string; sourceOptions?: SourceOptions; sourceNotes?: string[]; reviewNotes?: string[]; pacing?: StoryPacing }
   /** Flow export can restyle an existing shot plan without another LLM request or changing the video. */
   flowLook?: 'project' | 'cartoon-indonesia'
@@ -141,6 +151,9 @@ export interface TextOverlay extends OverlayBase {
   color: string
   style: TextOverlayStyle
   bold: boolean
+  animation?: 'none' | 'fade' | 'pop' | 'slideup'
+  animationSec?: number
+  counter?: { from: number; to: number; duration: number; offset?: number; prefix: string; suffix: string; decimals: number }
 }
 
 export type Overlay = ImageOverlay | TextOverlay
@@ -331,6 +344,9 @@ export interface ProjectSnapshot {
 }
 
 export interface NewProjectInput {
+  contentFormat?: ContentFormat
+  durationMode?: 'auto' | 'manual'
+  formatPlan?: FormatPlan
   title?: string
   storyBrief?: EditorSettings['storyBrief']
   synopsis?: string
@@ -378,6 +394,7 @@ export interface StoryPacing {
 }
 
 export interface SourceOptions {
+  format?: ContentFormat
   mode: 'factual' | 'fiction'
   audience: string
   angle: string
@@ -409,6 +426,15 @@ export interface VideoIdea {
 }
 
 export interface AppSettings {
+  flowVideoInputMode: 'agent' | 'frames'
+  channelStyleEnabled: boolean
+  channelStyleDescription: string
+  channelStyleReference: string
+  channelCharacterEnabled: boolean
+  channelCharacterName: string
+  channelCharacterDescription: string
+  channelCharacterReference: string
+
   defaultTtsProvider: TtsProvider
   defaultLanguage: string
   exportFolder: string | null
@@ -440,6 +466,11 @@ export interface AppSettings {
   videoModel: string
   /** Which service draws clip images. Cloudflare Workers AI has a free daily quota and needs no credits. */
   imageProvider: ImageProvider
+  flowImageTransport: 'api' | 'browser'
+  flowBrowserAccountId: number
+  flowBaseUrl: string
+  flowImageModel: string
+  flowVideoModel: string
   /** Cloudflare account id: the REST endpoint is per-account. */
   cloudflareAccountId: string
   /** Cloudflare text-to-image model id. */

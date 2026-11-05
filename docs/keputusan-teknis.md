@@ -272,3 +272,95 @@ Sumber finance/edukasi memakai SourceOptions dan mode faktual eksplisit dari int
 ### Pemeriksaan naskah terikat versi; impor Flow ditinjau sebelum diterapkan
 
 Tinjauan AI wajib memiliki kutipan exact dan ID adegan sah, tidak mengubah naskah dan tidak memverifikasi fakta. Fingerprint menyimpan seluruh input untuk invalidasi setelah edit. Impor massal memakai token path dari picker, pasangan eksplisit, validasi media dan transaksi; jangan menebak berdasarkan urutan file atau menghapus aset lama. Normalisasi video menjaga kompatibilitas preview; durasi narasi tetap berasal dari timeline bersama. Cancel menghentikan persiapan, bukan membalik commit yang selesai. Lihat [pemeriksaan-dan-impor-flow.md](pemeriksaan-dan-impor-flow.md).
+
+### Naskah diperiksa lintas adegan sebelum diterapkan
+
+Pemeriksaan keterpahaman memakai kutipan dan nomor sah, satu putaran perbaikan terbatas beserta adegan tetangga, lalu pembacaan ulang. Hasil yang belum lolos tidak mengganti naskah lama. Aturan berlaku sesuai genre, tidak mengklaim verifikasi sumber dan tidak memaksa bahaya pada visual edukasi. Lihat [keterpahaman-naskah.md](keterpahaman-naskah.md).
+
+### Brainstorm dan teks animasi tidak mengarang riset atau transaksi
+
+Enam kandidat ditinjau sebelum mengubah draf; hook dan daftar pemeriksaan tersimpan sebagai arahan, bukan fakta terverifikasi. Teks/angka animasi adalah overlay opsional pada JSON editor, memakai fungsi frame bersama untuk preview dan ASS. Counter tidak menebak seluruh transaksi dari narasi; waktu dan nominal ditinjau pengguna. Lihat [brainstorm-dan-teks-animasi.md](brainstorm-dan-teks-animasi.md).
+
+### Progres naskah panjang disimpan sebelum commit
+
+script-draft.json menyimpan kerangka dan prefix adegan secara atomik, terikat hash arahan, sinopsis, format, bahasa, durasi dan naskah sebelumnya. Kelompok empat adegan mengurangi ukuran respons. Saat request gagal, klik Susun naskah melanjutkan dari disk, termasuk setelah restart; mengganti model tetap boleh untuk melanjutkan kerangka yang sama. Perubahan input membatalkan pemakaian draf. Pemeriksaan lintas adegan tetap wajib dan naskah lama baru diganti setelah lolos. Draf lengkap disimpan sebelum review supaya timeout review tidak menulis ulang seluruh naskah. Checkpoint dihapus setelah commit berhasil.
+
+### Pemeriksa alur tidak mewarisi instruksi penulis
+
+System prompt pemeriksa berdiri sendiri, tanpa arahan membuat scenes dari penulis. Genre, bahasa dan batas fakta dipertahankan dalam brief/draf yang diperiksa; temuan harus memiliki nomor dan kutipan exact. Respons salah struktur atau kutipan dicoba ulang satu kali dengan bentuk JSON eksplisit, tidak dianggap issues kosong. Kegagalan kedua tetap memblokir commit dan mempertahankan checkpoint lengkap. Mengubah prompt pemeriksa tidak mengubah fingerprint draf penulisan, supaya draf 39/39 yang sudah tersimpan dapat dipulihkan.
+
+### Perbaikan alur melanjutkan tulisan terbaru
+
+Pemeriksaan dapat menjalankan maksimal dua putaran perbaikan dalam satu penyusunan. Setiap kelompok perbaikan yang valid langsung diteruskan ke callback checkpoint; writer menyimpannya sebagai draf lengkap dengan fingerprint input yang sama. Kegagalan reread atau temuan tersisa tidak mengembalikan teks ke draf sebelum perbaikan. Percobaan berikutnya membaca ulang teks terbaru. Temuan yang masih ada tetap memblokir commit; tidak ada pelolosan otomatis atas naskah bermasalah.
+
+## Flow2API: isolasi antrean dan retry yang terbatas (29 Oktober 2026)
+
+Flow memakai antrean tersendiri dengan konkurensi satu. Media disimpan lokal, mengikuti pemeriksaan kualitas/probe yang sama, dan tidak dipasang bila konteks adegan sudah berubah. Video yang berhasil mengubah motionType menjadi video agar preview/export memakai hasilnya. API key hanya dikirim ke origin server lokal; pengalihan unduhan eksternal tidak membawa Authorization.
+
+Pemilihan akun berada pada backend, bukan penghitungan 20 gambar di renderer. Konektor hanya mengulang penolakan kuota yang eksplisit bila health backend mengumumkan patch kebijakan Kisara aktif. CAPTCHA, auth, koneksi, timeout, atau hasil tak jelas berhenti untuk menghindari pengiriman ganda. Status terhubung tidak dijadikan bukti keberhasilan generasi. Lihat docs/google-flow-lokal.md untuk patch, setup, dan hasil pengujian.
+
+### Peluncur Flow lokal
+
+`flowLocal.ts` hanya menjalankan peluncur instalasi yang dikenal di 127.0.0.1:8765, memakai execFile dengan argumen terpisah dan windowsHide. Startup tidak memblokir pembuatan jendela. Status dan generasi menunggu promise peluncuran yang sama; server sehat dipakai kembali. Timeout/error peluncur tidak menampilkan keluaran proses mentah, yang mungkin berisi informasi sensitif. Endpoint manual lain tidak menjalankan proses lokal. Server tidak dihentikan ketika Kisara ditutup.
+
+### Draf lengkap dan pemeriksaan alur
+
+Draf lengkap yang gagal diperiksa AI tidak diterapkan otomatis sebagai naskah yang lolos. Pengguna dapat memilih membuka checkpoint yang cocok melalui IPC pemulihan tanpa request AI, dengan penanda review tertunda. Ide/pengaturan/klip lama tetap diperiksa sebelum replaceScript. Metadata checkpoint hanya menawarkan tombol; fingerprint penuh tetap diverifikasi saat membuka. Pilihan TTS proyek tidak berubah otomatis saat langkah Ide dibuka karena ia bagian dari fingerprint dan preferensi pengguna.
+
+### Status worker dan proses narasi
+
+Flow setup memakai API backend terautentikasi yang hanya mengembalikan identitas akun, route, status, dan label worker. Pairing adalah pilihan eksplisit pengguna dan tidak boleh meminjam route akun lain. Preflight batch dilakukan sebelum membuat job ketika worker belum siap. Status ini tidak menjadi bukti kuota, login Google, atau generasi pasti berhasil.
+
+Narasi dapat berada pada tahap Whisper sebelum audio per adegan terpasang; tampilkan tahap dan hitungan tersimpan terpisah. Semua provider memeriksa fingerprint dan teks sebelum menerapkan hasil suara. Helper mediaProcess memasang listener abort hanya selama subprocess hidup dan melepasnya pada seluruh jalur selesai/error; jangan menambahkan listener permanen per potongan audio.
+
+### Profil Flow terkelola
+
+Satu profil browser per email dan route UUID; konektor Worker/Updater dibungkus dalam scope terpisah untuk menghindari tabrakan global. Kunci diinjeksikan melalui stdin helper dan storage browser, tidak lewat seed JS atau argumen CLI. Login/OTP pengguna tidak diotomatisasi. Helper wajib mencocokkan email sesi sebelum mengeksekusi sync dan pairing. Akun/profile tidak dipasangkan hanya karena worker sudah tersambung. Browser Playwright pendukung merupakan dependensi lokal; jalur ini tidak mengganti atau mengedit profil Chrome utama pengguna.
+
+### Label pembicara tidak menjadi ucapan TTS
+`dialogue[].speaker` dipakai sebagai identitas pembicara, bukan prefiks yang dibacakan.
+`composeSceneSpeech` menambahkan isi dialog dan tag pembawaan saja. `stripSpeakerLabels` membersihkan
+heading Narator/Narrator dan nama pemeran yang dikenal pada awal baris/kalimat, termasuk format lama
+`Kenzo, “...”`; nama yang memang berada di dalam kalimat atau ucapan tetap dipertahankan.
+
+Narasi gabungan mengambil snapshot teks sumber dan teks ucapan terpisah. Semua provider menerima
+teks ucapan; pemotongan dan caption mengikuti teks tersebut. Aset mempertahankan `prompt` sebagai
+naskah sumber untuk pemeriksaan edit terlambat, dan menyimpan `meta.spokenText` untuk sinkronisasi
+caption berikutnya. Rekaman lama tidak diubah otomatis dan perlu direkam ulang secara sadar.
+Tidak ada migrasi atau penulisan ulang naskah proyek pengguna. Regresi mencakup kelima provider,
+pemotongan FFmpeg, heading/tag/nama literal dan rekaman Windows lokal lewat harness terisolasi.
+
+### TTS per klip menolak hasil yang sudah basi atau dibatalkan
+Pemeriksaan fingerprint dan naskah sebelum memasang audio berlaku untuk semua provider, termasuk Gemini dan ElevenLabs. Setelah pengukuran audio selesai, sinyal pembatalan diperiksa sebelum insert aset dan patch klip. Ini mencegah hasil yang terlambat mengganti suara setelah pengguna mengedit naskah, memilih suara lain, atau membatalkan pekerjaan. Regresi `tools/check-clip-tts-stale.cjs` menjalankan 30 kasus provider/perubahan dengan layanan tiruan; tidak memakai kredit atau data pengguna.
+
+
+### Karakter utama channel dan referensi Flow
+Kenzo bawaan berasal dari gambar milik pengguna di resources/kenzo.png. Pengaturan global menyimpan nama, ciri tetap, pilihan aktif dan ID file referensi. Upload menggandakan gambar terverifikasi ke folder channel-character dengan nama UUID; path arbitrer dari renderer tidak diterima. Referensi karakter utama menjadi gambar pertama pada setiap permintaan gambar Flow, tanpa menyunting naskah/proyek lama. Hasil yang terlambat setelah karakter diganti masuk riwayat, tidak dipasang. Mengunggah karakter baru tidak menimpa gambar atau video yang sudah ada.
+
+Transport browser memakai protokol browserMediaVersion 2, worker 1.4.x, dan menolak backend lama sebelum mengirim gambar/video. Lampiran diunggah lewat kontrol normal, dipilih dari pustaka dengan nama berbasis hash isi dan diverifikasi sebelum satu klik kirim. Pemilihan media serta kirim memakai klik Chrome melalui izin debugger yang sudah digunakan worker. Penolakan sebelum kirim tidak mengulang generasi; hasil setelah kirim yang belum jelas harus diperiksa.
+
+Image-to-video mengirim gambar adegan sebagai satu referensi animasi kepada Flow Agent, memilih rasio dan x1 pada kelompok pengaturan video, lalu mengambil media video dari tile hasil. Ini memakai instruksi animasi Agent; belum sama dengan jaminan first-frame numerik dari mode Frames. Durasi diminta 8 detik dan hasil aktual diukur, bukan dijanjikan mengikuti panjang narasi. Klip lebih panjang mengikuti perilaku timeline yang sudah ada. Transfer blob melalui endpoint lokal terautentikasi dibatasi 40 MB dan unduhan sekali pakai, sehingga video tidak dibawa di WebSocket besar. Pengujian browser lokal menggunakan ekstensi nyata dan halaman tiruan; keberhasilan Google harus dicatat terpisah.
+
+
+Verifikasi implementasi Kenzo: unggahan di Flow Agent masuk pustaka sebelum dipilih sebagai bahan. Klik pemilihan harus memakai input Chrome asli. Sesudah pemasangan, tunggu unggahan selesai dan ambil ulang node composer. Lampiran yang tertinggal hanya boleh digunakan ulang bila gambar hasil decode cocok dengan referensi yang diminta; lampiran berbeda ditolak. Baseline media diambil lagi tepat sebelum klik kirim, termasuk thumbnail yang belum selesai decode; gambar hasil harus sesuai rasio. Ini mencegah unggahan lembar karakter keliru diterima sebagai hasil adegan.
+
+Bukti runtime: satu hasil adegan Kenzo 1376×768 dari Flow asli telah diunduh ke tmp/bugcheck/kenzo-live.png dan diperiksa visual. Uji video Google mencapai persetujuan kredit (approval_required), sehingga keberhasilan video nyata belum diklaim sebelum persetujuan dan hasil diperiksa. Endpoint recover hanya membaca hasil video yang sudah dikirim, tidak membuat generasi baru. Pada sesi yang masih ada, collector mempertahankan baseline; fallback hanya menerima tepat satu video proyek.
+
+Tes native terisolasi kenzo-media-native-verified.log lulus: IPC nyata mengirim referensi bawaan, menyimpan gambar, meneruskan gambar adegan ke I2V, mengonversi video ke H.264 MP4, dan memasang motionType video pada klip. Storyboard dan indikator Kenzo diperiksa pada screenshot. Halaman Flow tiruan dengan worker asli mencakup tujuh kasus referensi/video termasuk pustaka, dua rasio, unggahan gagal dan penggunaan ulang lampiran cocok. Data proyek pengguna dan audio lama tidak diubah oleh harness.
+
+
+Verifikasi video nyata (4 November 2026): setelah pengguna menyetujui biaya di Flow, Worker 1.4.2 berhasil mengambil hasil yang sudah ada melalui recover tanpa generasi baru. File tmp/bugcheck/kenzo-live.mp4 berukuran 843137 byte, H.264/AAC, 1280×720, 24 fps, durasi 7,96 detik. FFmpeg berhasil mendecode seluruh 191 frame; contact sheet pada empat waktu memperlihatkan Kenzo memasukkan uang ke stoples dengan identitas visual tetap. Hasil nyata tersimpan sebagai artefak uji; pemasangan video pada klip telah diuji terpisah lewat harness native terisolasi, bukan dengan mengubah proyek produksi pengguna. Pengambilan media memakai cookie Chrome hanya ke host Google yang diizinkan, dan API key hanya ke backend loopback.
+
+
+### Referensi gaya seluruh adegan dan mode Frames (4 November 2026)
+Pengaturan Umum memiliki referensi gaya global terpisah dari identitas Kenzo, dengan unggahan gambar terverifikasi dan salinan UUID milik aplikasi. Bawaan mengikuti ilustrasi Kenzo. Instruksi gaya mencakup NPC, lingkungan, bangunan dan properti; preset gaya proyek tidak disertakan jika gaya global aktif. Referensi identitas menjadi gambar pertama, gaya menjadi berikutnya, dan gambar identik tidak diduplikasi. Sisa maksimum tiga referensi dipakai untuk pemeran adegan. Fingerprint antrean dan pemeriksaan sebelum pemasangan hasil menyertakan gaya; mengganti gaya tidak menulis ulang media lama.
+
+Video browser memiliki pilihan eksplisit Agent (bawaan yang sudah terbukti pada Google) atau Frames. Tidak ada fallback diam-diam dari Frames ke Agent. Protokol browserFramesVersion 1 dan action generate_frames_video mencegah server/worker lama menganggapnya generasi Agent. Worker 1.5.1 memeriksa kontrol standar Video/Frames, rasio, x1 dan gambar start frame yang sudah didecode; frame salah atau dilepas sebelum klik menolak pengiriman. Ini baru lolos halaman uji; UI Flow akun pengguna saat inspeksi hanya menampilkan Agent, sehingga keberhasilan Frames pada Google belum diklaim. Pilihan di UI menyatakan batas verifikasi ini.
+
+Regresi: sepuluh kasus worker nyata pada halaman tiruan, termasuk portrait/landscape, mode tidak tersedia, frame salah dan frame dilepas saat input; seluruh kasus negatif nol submit. Uji API backend, unduhan video tanpa generasi baru, dan pengiriman native satu kali lulus. Harness native channel-style-integration-verified.log lulus dengan dua referensi berbeda pada gambar, satu gambar adegan pada video, serta motionType video di timeline terisolasi. Preview panel gaya diperiksa melalui channel-style-ui.png. Typecheck dan build lulus. Tidak ada perubahan proyek produksi atau kredit Google dalam rangkaian tes ini.
+
+
+### Deduplikasi referensi berdasarkan piksel, bukan encoding PNG
+Unggahan gaya yang memakai gambar Kenzo yang sama dapat memiliki byte berbeda dari resources/kenzo.png karena normalisasi PNG. Perbandingan Buffer.equals mengirim dua referensi meskipun piksel identik, sementara Flow memasang satu bahan; worker kemudian menunggu jumlah lampiran yang tidak akan tercapai. Pemeriksaan baca-saja pada kasus pengguna menemukan ukuran file berbeda dengan piksel hasil decode identik. sameReferenceImage membandingkan dimensi dan bitmap decode, memakai kesamaan byte sebagai jalur cepat. Referensi identitas/gaya yang identik dilampirkan sekali dan prompt gaya menunjuk gambar nomor satu. Gambar berbeda tetap terpisah; tidak memakai toleransi warna yang dapat menyatukan karakter/gaya berbeda.
+
+Regresi native reference-dedup-native.log: PNG hasil normalisasi berbeda byte tetapi sama piksel; gambar berbeda dimensi tidak digabung; IPC upload asli dan generate.clipImage mengirim tepat satu referensi untuk identitas dan gaya, kemudian menyimpan hasil pada klip uji. Lampiran Kenzo di Chrome aktif juga diverifikasi dapat dibaca tanpa submit Google baru. Typecheck dan build lulus. Data pengguna tidak ditulis oleh pengujian. Perbaikan berada di proses utama Kisara; tidak membutuhkan reload worker.

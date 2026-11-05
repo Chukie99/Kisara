@@ -1,0 +1,908 @@
+diff --git a/extension/background.js b/extension/background.js
+index 517e3f6..369ba60 100644
+--- a/extension/background.js
++++ b/extension/background.js
+@@ -1,9 +1,11 @@
+ let ws = null;
++let connectionGeneration = 0;
++let registered = false;
+ let reconnectTimeout = null;
+ let heartbeatInterval = null;
+ 
+ const DEFAULT_SETTINGS = {
+-    serverUrl: "ws://127.0.0.1:8000/captcha_ws",
++    serverUrl: "ws://127.0.0.1:8765/captcha_ws",
+     apiKey: "",
+     routeKey: "",
+     clientLabel: ""
+@@ -23,6 +25,8 @@ function getSettings() {
+ }
+ 
+ function closeSocket() {
++    connectionGeneration++;
++    registered = false;
+     if (heartbeatInterval) clearInterval(heartbeatInterval);
+     heartbeatInterval = null;
+     if (reconnectTimeout) clearTimeout(reconnectTimeout);
+@@ -74,8 +78,21 @@ function waitForTabReady(tabId, timeoutMs = 12000) {
+ async function connectWS() {
+     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+ 
++    const generation = ++connectionGeneration;
+     const settings = await getSettings();
+-    const url = new URL(settings.serverUrl || DEFAULT_SETTINGS.serverUrl);
++    if (generation !== connectionGeneration) return;
++    if (!settings.apiKey) {
++        console.log('[Flow2API] Isi API key melalui pengaturan Worker sebelum menyambungkan.');
++        return;
++    }
++    let url;
++    try {
++        url = new URL(settings.serverUrl || DEFAULT_SETTINGS.serverUrl);
++        if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('Invalid protocol');
++    } catch {
++        console.log('[Flow2API] Alamat WebSocket tidak valid. Periksa pengaturan Worker.');
++        return;
++    }
+     if (settings.apiKey) {
+         url.searchParams.set("key", settings.apiKey);
+     }
+@@ -86,14 +103,17 @@ async function connectWS() {
+         url.searchParams.set("client_label", settings.clientLabel);
+     }
+ 
+-    ws = new WebSocket(url.toString());
++    const socket = new WebSocket(url.toString());
++    ws = socket;
+ 
+     ws.onopen = () => {
+-        console.log("[Flow2API] Background connected to WebSocket", url.toString());
++        if (ws !== socket) return;
++        console.log("[Flow2API] Worker terhubung ke server lokal.");
+         ws.send(JSON.stringify({
+             type: "register",
+             route_key: settings.routeKey,
+-            client_label: settings.clientLabel
++            client_label: settings.clientLabel,
++            browser_ui_version: 1
+         }));
+         if (heartbeatInterval) clearInterval(heartbeatInterval);
+         heartbeatInterval = setInterval(() => {
+@@ -106,6 +126,7 @@ async function connectWS() {
+     let tokenQueue = Promise.resolve();
+ 
+     ws.onmessage = async (event) => {
++        if (ws !== socket) return;
+         let data;
+         try {
+             data = JSON.parse(event.data);
+@@ -114,10 +135,106 @@ async function connectWS() {
+         }
+ 
+         if (data.type === "register_ack") {
++            registered = true;
+             console.log("[Flow2API] Registered route key:", data.route_key || "(empty)");
+             return;
+         }
+ 
++        if (data.type === 'inspect_flow_ui') {
++            try {
++                const tabs = await chrome.tabs.query({ url: 'https://flow.google.com/project/*' });
++                if (tabs.length !== 1) throw new Error('Buka tepat satu proyek Flow pada profil Chrome ini sebelum pemeriksaan.');
++                await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'ISOLATED', files: ['browser-ui.js'] });
++                const preparing = chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'ISOLATED', func: async task => await globalThis.kisaraFlowUI(task), args: [{ action: data.action || 'inspect', prompt: data.prompt, aspect: data.aspect, references: data.references, nativeSubmit: ['generate_image','generate_reference_image','generate_video','generate_frames_video'].includes(data.action) }] });
++                let prepared = false;
++                preparing.then(()=>{prepared=true},()=>{prepared=true});
++                while (!prepared) {
++                    await new Promise(r=>setTimeout(r,150));
++                    if (prepared) break;
++                    const target = {tabId:tabs[0].id};
++                    const pending = await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>Boolean(globalThis.kisaraFlowControlPoint)});
++                    if (!pending[0]?.result) continue;
++                    let attached=false,ok=false;
++                    try {
++                        await chrome.debugger.attach(target,'1.3'); attached=true;
++                        const points=await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>globalThis.kisaraFlowControlPoint?.()});
++                        const point=points[0]?.result;
++                        if (Number.isFinite(point?.x)&&Number.isFinite(point?.y)) {
++                            await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mousePressed',x:point.x,y:point.y,button:'left',buttons:1,clickCount:1});
++                            await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mouseReleased',x:point.x,y:point.y,button:'left',buttons:0,clickCount:1});
++                            ok=true;
++                        }
++                    } catch {} finally { if(attached)await chrome.debugger.detach(target).catch(()=>{}); }
++                    await chrome.scripting.executeScript({target,world:'ISOLATED',func:ok=>globalThis.kisaraFlowControlDone?.(ok),args:[ok]});
++                }
++                const result = await preparing;
++                let inspection = result[0]?.result;
++                if (inspection?.nativeSubmit) {
++                    const target = { tabId: tabs[0].id };
++                    let attached = false, attempted = false;
++                    try {
++                        await chrome.debugger.attach(target, '1.3');
++                        attached = true;
++                        const points = await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'ISOLATED', func: () => globalThis.kisaraFlowNativePoint?.() });
++                        const point = points[0]?.result;
++                        if (point?.failure) inspection = point;
++                        else if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y) || point.x < 0 || point.y < 0) inspection = { failure: { code: 'submit_not_ready', stage: 'ready', submitted: false } };
++                        else {
++                            // One native press/release pair. Never fall back or click again on an ambiguous failure.
++                            attempted = true;
++                            await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
++                            await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
++                            await chrome.debugger.detach(target);
++                            attached = false;
++                            const collected = await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, world: 'ISOLATED', func: async () => await globalThis.kisaraFlowCollect?.() });
++                            inspection = collected[0]?.result || { failure: { code: 'result_uncertain', stage: 'submitted', submitted: true } };
++                        }
++                    } catch {
++                        inspection = { failure: { code: attempted ? 'submit_unconfirmed' : 'native_input_unavailable', stage: attempted ? 'submitted' : 'ready', submitted: attempted } };
++                    } finally {
++                        if (attached) await chrome.debugger.detach(target).catch(() => {});
++                    }
++                }
++                if (inspection?.browserMediaUrl) {
++                    const source = new URL(inspection.browserMediaUrl);
++                    if (source.origin !== 'https://flow.google.com' || !source.pathname.startsWith('/asb/')) throw new Error('media_download_failed');
++                    const response = await fetch(source.href, {credentials:'include',signal:AbortSignal.timeout(60000)});
++                    const final = new URL(response.url);
++                    if (!response.ok || !(final.origin === source.origin || final.hostname === 'googlevideo.com' || final.hostname.endsWith('.googlevideo.com') || final.hostname === 'flow-content.google')) throw new Error('media_download_failed');
++                    const reader=response.body.getReader(),chunks=[];let size=0;
++                    try { for (;;) {const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>40*1024*1024)throw new Error('media_download_failed');chunks.push(value)} } finally {await reader.cancel().catch(()=>{})}
++                    let blob=new Blob(chunks);
++                    const head=new Uint8Array(await blob.slice(0,12).arrayBuffer());
++                    const mp4=String.fromCharCode(...head.slice(4,8))==='ftyp',webm=head[0]===0x1a&&head[1]===0x45&&head[2]===0xdf&&head[3]===0xa3;
++                    if(!mp4&&!webm)throw new Error('media_download_failed');
++                    blob=new Blob([blob],{type:mp4?'video/mp4':'video/webm'});
++                    const cfg=await chrome.storage.local.get(['apiKey','serverUrl']),base=new URL(cfg.serverUrl||'ws://127.0.0.1:8765/captcha_ws');
++                    if(!['127.0.0.1','localhost','[::1]'].includes(base.hostname)||!['ws:','http:'].includes(base.protocol))throw new Error('media_download_failed');
++                    base.protocol='http:';base.pathname='/api/kisara/browser/media/'+encodeURIComponent(data.req_id);base.search='';base.hash='';
++                    const uploaded=await fetch(base.href,{method:'PUT',headers:{Authorization:'Bearer '+cfg.apiKey,'Content-Type':blob.type},body:blob,signal:AbortSignal.timeout(60000)});
++                    if(!uploaded.ok)throw new Error('media_download_failed');
++                    inspection.mediaUrl=base.pathname;
++                    delete inspection.browserMediaUrl;
++                }
++                if (inspection?.mediaUrl?.startsWith('data:')) {
++                    const cfg = await chrome.storage.local.get(['apiKey', 'serverUrl']);
++                    const base = new URL(cfg.serverUrl || 'ws://127.0.0.1:8765/captcha_ws');
++                    if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) || !['ws:', 'http:'].includes(base.protocol)) throw new Error('media_download_failed');
++                    base.protocol = 'http:'; base.pathname = '/api/kisara/browser/media/' + encodeURIComponent(data.req_id); base.search = ''; base.hash = '';
++                    const blob = await (await fetch(inspection.mediaUrl)).blob();
++                    const uploaded = await fetch(base.href, { method: 'PUT', headers: { Authorization: 'Bearer ' + cfg.apiKey, 'Content-Type': blob.type }, body: blob, signal: AbortSignal.timeout(60000) });
++                    if (!uploaded.ok) throw new Error('media_download_failed');
++                    inspection.mediaUrl = base.pathname;
++                }
++                if (inspection?.errorCode) throw new Error(inspection.errorCode);
++                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ req_id: data.req_id, status: 'success', inspection }));
++            } catch (error) {
++                const allowed = ['quota_exhausted','google_blocked','approval_required','browser_busy','unsupported_input','prompt_not_found','existing_draft','settings_not_unique','image_model_not_verified','image_settings_not_unique','prompt_input_failed','submit_not_ready','media_download_failed','multiple_outputs','result_uncertain'];
++                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ req_id: data.req_id, status: 'error', errorCode: allowed.includes(error.message) ? error.message : 'browser_not_ready', error: 'Buka tepat satu proyek Flow di profil akun yang dipilih. Jika ada permintaan login atau izin, selesaikan sendiri di browser.' }));
++            }
++            return;
++        }
++
+         if (data.type === "get_token") {
+             tokenQueue = tokenQueue.then(() => handleGetToken(data)).catch(err => {
+                 console.error("[Flow2API] Queue Error:", err);
+@@ -126,15 +243,18 @@ async function connectWS() {
+     };
+ 
+     ws.onclose = () => {
++        if (ws !== socket) return;
+         console.log("[Flow2API] WebSocket Closed. Reconnecting in 2s...");
+         ws = null;
++        registered = false;
+         if (heartbeatInterval) clearInterval(heartbeatInterval);
+         if (reconnectTimeout) clearTimeout(reconnectTimeout);
+         reconnectTimeout = setTimeout(connectWS, 2000);
+     };
+ 
+-    ws.onerror = (e) => {
+-        console.log("[Flow2API] WebSocket Error", e);
++    ws.onerror = () => {
++        if (ws !== socket) return;
++        console.log("[Flow2API] Koneksi Worker gagal. Periksa server, alamat dan API key.");
+     };
+ }
+ 
+@@ -230,6 +350,18 @@ async function handleGetToken(data) {
+     }
+ }
+ 
++// Registered events wake an MV3 worker after Chrome/profile startup or suspension.
++chrome.runtime.onStartup.addListener(() => { void connectWS(); });
++chrome.runtime.onInstalled.addListener(() => { void connectWS(); });
++chrome.runtime.onMessage.addListener((message, _sender, respond) => {
++    if (message?.type !== 'flow_worker_connect') return;
++    connectWS().then(() => respond({ connected: registered && ws?.readyState === WebSocket.OPEN }))
++        .catch(() => respond({ connected: false }));
++    return true;
++});
++
++chrome.action.onClicked.addListener(() => { chrome.runtime.openOptionsPage(); });
++
+ chrome.storage.onChanged.addListener((changes, areaName) => {
+     if (areaName !== "local") return;
+     if (changes.routeKey || changes.serverUrl || changes.apiKey || changes.clientLabel) {
+diff --git a/extension/browser-ui.js b/extension/browser-ui.js
+new file mode 100644
+index 0000000..af37a45
+--- /dev/null
++++ b/extension/browser-ui.js
+@@ -0,0 +1,399 @@
++// Operate visible controls in the extension's isolated world; never call private Google RPCs.
++globalThis.kisaraFlowUI = (() => { let phase = 'inspect', clicked = false; const run = async function (task) {
++  const visible = e => !!(e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && (!e.checkVisibility || e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) && !e.closest('[aria-hidden="true"],[inert]'));
++  const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 160);
++  const buttons = () => [...document.querySelectorAll('button,[role="button"]')].filter(visible);
++  const blocked = () => [...document.querySelectorAll('[role="alert"],[role="dialog"]')].filter(visible).some(e => /unusual activity|aktivitas tidak biasa|captcha|verify you|verifikasi|access denied|akses ditolak/i.test(e.textContent || ''));
++  const editors = () => [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].filter(visible);
++  const submitButtons = () => buttons().filter(e => /^(Mulai pembuatan|Start generation|Generate|Generate video|Buat video)$/.test(e.getAttribute('aria-label') || ''));
++  const disabled = e => !e || e.disabled || e.matches(':disabled') || e.getAttribute('aria-disabled') === 'true' || !!e.closest('[inert]');
++  const nativeControlClick = async element => {
++    if (!task.nativeSubmit && !['recover_video','inspect_frames'].includes(task.action)) throw new Error('native_input_unavailable');
++    await new Promise((resolve,reject)=>{
++      const timer=setTimeout(()=>{delete globalThis.kisaraFlowControlPoint;delete globalThis.kisaraFlowControlDone;reject(new Error('reference_upload_failed'))},10000);
++      globalThis.kisaraFlowControlPoint=()=>{
++        if (!element.isConnected || disabled(element)) return null;
++        element.scrollIntoView({block:'center'});
++        const r=element.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
++        const top=document.elementFromPoint(x,y);
++        globalThis.kisaraFlowControlDiagnostic={target:element.tagName,label:clean(element.textContent),hit:top?.tagName,classes:clean(top?.className),hitLabel:clean(top?.textContent)};
++        return element.contains(top)?{x,y}:null;
++      };
++      globalThis.kisaraFlowControlDone=ok=>{clearTimeout(timer);delete globalThis.kisaraFlowControlPoint;delete globalThis.kisaraFlowControlDone;ok?resolve():reject(new Error('reference_upload_failed'))};
++    });
++  };
++  const busy = () => [...document.querySelectorAll('flow-stop-icon-button, flow-pending-tile')].some(visible);
++  const snapshot = () => ({ pending: [...document.querySelectorAll('flow-stop-icon-button,flow-pending-tile')].filter(visible).map(e=>({tag:e.tagName,parent:e.parentElement.tagName,text:clean(e.textContent)})), uploads: { inputs: [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple,parent:e.parentElement.tagName})), ancestry: editors().flatMap(e=>{const a=[];for(let p=e,n=0;p&&n<7;p=p.parentElement,n++)a.push({tag:p.tagName,classes:clean(p.className),images:p.querySelectorAll('img').length});return a}) }, composer: { editors: editors().length, draftLength: editors().reduce((n,e) => n + (e.textContent || '').length, 0), submitCount: submitButtons().length, submitDisabled: submitButtons().some(disabled), busy: busy(), online: navigator.onLine }, host: location.hostname, projectOpen: /^\/project\/[^/]+/.test(location.pathname), blocked: blocked(), fields: [...document.querySelectorAll('video')].map(e=>({tag:'video',role:e.parentElement.tagName,label:JSON.stringify({loop:e.loop,duration:Number.isFinite(e.duration)?e.duration:null,width:e.videoWidth,height:e.videoHeight}),placeholder:(e.currentSrc||e.src?new URL(e.currentSrc||e.src).hostname:'no-source')+' '+clean(e.className)})).concat([...document.querySelectorAll('flow-video-tile')].map((e,i)=>({tag:'video-tile',role:String(i),label:clean(e.textContent||e.getAttribute('aria-label')),placeholder:(visible(e)?'visible':'hidden')+' '+[...e.attributes].map(a=>a.name).join(',')})).concat([...document.querySelectorAll('textarea,input:not([type="password"]),[contenteditable="true"],flow-base-prompt-box img,flow-image-tile img,flow-video-tile img')].filter(visible).slice(0, 12).map(e => ({ tag: e.tagName.toLowerCase(), role: e.getAttribute('role') || '', label: clean(e.getAttribute('aria-label') || e.getAttribute('alt')), placeholder: clean(e.tagName==='IMG' ? e.naturalWidth+'x'+e.naturalHeight+' '+(e.src.includes('/asb/')?'asb':'other') : e.getAttribute('placeholder') || e.getAttribute('title')) })))), buttons: buttons().slice(0, 80).map(e => ({ label: clean(e.getAttribute('aria-label')), text: clean(e.textContent), disabled: Boolean(e.disabled || e.getAttribute('aria-disabled') === 'true') })), options: [JSON.stringify(globalThis.kisaraFlowRecoveryDiagnostic || globalThis.kisaraFlowControlDiagnostic || {}),...performance.getEntriesByType('resource').filter(e=>e.initiatorType==='video'||/googlevideo\.com|flow-content\.google\/video\/|\.mp4(?:[?]|$)/i.test(e.name)).slice(-6).map(e=>JSON.stringify({host:new URL(e.name).hostname,type:e.initiatorType,contentType:e.contentType||'',size:e.encodedBodySize}))].concat([...document.querySelectorAll('[role="menuitem"],[role="option"],[role="radio"],[role="tab"],[role="dialog"]')].filter(visible).slice(0, 40).map(e => clean(e.textContent))) });
++  if (location.hostname !== 'flow.google.com' || !/^\/project\/[^/]+/.test(location.pathname)) throw new Error('project_required');
++  if (blocked()) throw new Error('google_blocked');
++  if (task.action === 'recover_video') {
++    if (typeof globalThis.kisaraFlowRecover === 'function') return await globalThis.kisaraFlowRecover();
++    if (busy()) throw new Error('browser_busy');
++    if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
++    let players=[...document.querySelectorAll('video')].filter(e=>visible(e)&&(e.currentSrc||e.src));
++    if (!players.length) {
++      const videoFilter=buttons().filter(e=>/^videocam\s*Video$/.test(clean(e.textContent)));
++      if(videoFilter.length===1){videoFilter[0].click();await new Promise(r=>setTimeout(r,600));}
++      players=[...document.querySelectorAll('video')].filter(e=>visible(e)&&(e.currentSrc||e.src));
++    }
++    let player;
++    if (players.length===1) player=players[0];
++    else {
++      const tiles=[...document.querySelectorAll('flow-video-tile')].filter(e=>!e.querySelector('flow-pending-tile'));
++      if (tiles.length !== 1) throw new Error(tiles.length>1?'multiple_outputs':'result_timeout');
++      const tile=tiles[0];
++      tile.scrollIntoView({block:'center'});
++      tile.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));tile.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
++      await new Promise(r=>setTimeout(r,600));
++      player=tile.querySelector('video');
++      if (!(player?.currentSrc||player?.src)) {
++        await nativeControlClick(tile);
++        await new Promise(r=>setTimeout(r,1000));
++        const live=[...document.querySelectorAll('video')].filter(e=>visible(e)&&(e.currentSrc||e.src));
++        if(live.length===1)player=live[0];
++      }
++    }
++    const url=player?.currentSrc||player?.src;
++    globalThis.kisaraFlowRecoveryDiagnostic={stage:'source',players:players.length,hasUrl:!!url,scheme:url?new URL(url).protocol:'',width:player?.videoWidth,height:player?.videoHeight};
++    if (!url) throw new Error('media_download_failed');
++    if (url.startsWith('https:')&&new URL(url).origin!==location.origin) return {mediaUrl:url};
++    if (url.startsWith('https:')&&new URL(url).origin===location.origin&&new URL(url).pathname.startsWith('/asb/')) return {browserMediaUrl:url};
++    const response=await fetch(url,{signal:AbortSignal.timeout(30000)});let blob=await response.blob();
++    globalThis.kisaraFlowRecoveryDiagnostic={stage:'response',status:response.status,type:blob.type,size:blob.size};
++    if(!response.ok||blob.size>40*1024*1024)throw new Error('media_download_failed');
++    if(!blob.type.startsWith('video/')) {
++      const h=new Uint8Array(await blob.slice(0,12).arrayBuffer());
++      const mp4=String.fromCharCode(...h.slice(4,8))==='ftyp',webm=h[0]===0x1a&&h[1]===0x45&&h[2]===0xdf&&h[3]===0xa3;
++      globalThis.kisaraFlowRecoveryDiagnostic={stage:'signature',bytes:[...h]};
++      if(!mp4&&!webm)throw new Error('media_download_failed');
++      blob=new Blob([blob],{type:mp4?'video/mp4':'video/webm'});
++    }
++    const mediaUrl=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)});
++    return {mediaUrl};
++  }
++  if (task.action === 'inspect_frames') return snapshot();
++  if (task.action === 'inspect_upload') {
++    const add = buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
++    if (add.length === 1) { add[0].click(); await new Promise(r=>setTimeout(r,500)); }
++  }
++  if (task.action === 'settings') {
++    const model = buttons().find(e => /^(Model default pembuatan gambar|Default image generation model)$/.test(e.getAttribute('aria-label') || ''));
++    const choices = model ? [model] : buttons().filter(e => /^(Setelan|Settings)$/.test(e.getAttribute('aria-label') || '') && clean(e.textContent) === 'tune');
++    if (choices.length !== 1) throw new Error('settings_not_unique');
++    choices[0].click();
++    await new Promise(r => setTimeout(r, 400));
++  }
++  if (['prepare_image', 'generate_image', 'generate_reference_image', 'generate_video', 'generate_frames_video'].includes(task.action)) {
++    const video = ['generate_video','generate_frames_video'].includes(task.action);
++    const frames = task.action === 'generate_frames_video';
++    const refs = Array.isArray(task.references) ? task.references : [];
++    if ((video && refs.length !== 1) || (task.action === 'generate_reference_image' && !refs.length) || refs.length > 3) throw new Error('unsupported_input');
++    if (task.action !== 'prepare_image' && (!['16:9','9:16'].includes(task.aspect) || typeof task.prompt !== 'string' || !task.prompt.trim() || task.prompt.length > 7000)) throw new Error('unsupported_input');
++    const command = (video ? 'Animate the attached scene image into exactly ONE 8-second video. Start from this image and preserve its character identity, clothes, scene and art style. Do not make a new still image. Aspect ratio ' + task.aspect + '. No dialogue or music.\n\n' : 'Buat tepat satu gambar statis ' + (task.aspect === '9:16' ? 'portrait 9:16' : 'landscape 16:9') + ' dengan Nano Banana 2.1. Hanya satu gambar, jangan buat video.\n\n') + task.prompt;
++    const textOf = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
++    const sameDraft = e => textOf(e) === command.replace(/\s+/g, ' ').trim();
++    if (task.action !== 'prepare_image' && !task.nativeSubmit) throw new Error('native_input_unavailable');
++    phase = 'prepare';
++    let promptBox = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Apa yang ingin Anda buat?"], [contenteditable="true"][role="textbox"][aria-label="What do you want to create?"]');
++    if (busy()) throw new Error('browser_busy');
++    if (!promptBox) throw new Error('prompt_not_found');
++    // Only a visible quota refusal before submitting can safely move work to another account.
++    const quotaNotice = [...document.querySelectorAll('[role="alert"],[role="dialog"],flow-permission-message')].filter(visible).some(e => /insufficient credits|not enough (?:AI )?credits|(?:daily |image |generation )?quota (?:exceeded|exhausted)|kredit (?:AI )?tidak cukup|kuota (?:harian )?(?:habis|terlampaui)/i.test(e.textContent || ''));
++    if (quotaNotice) throw new Error('quota_exhausted');
++    if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
++    if (!frames) {
++    const modelLabel = video ? /^(Model default pembuatan video|Default video generation model)$/ : /^(Model default pembuatan gambar|Default image generation model)$/;
++    let model = buttons().find(e => modelLabel.test(e.getAttribute('aria-label') || '') || video && e.matches('.video-model-picker-button'));
++    if (!model) {
++      const settings = buttons().filter(e => /^(Setelan|Settings)$/.test(e.getAttribute('aria-label') || '') && clean(e.textContent) === 'tune');
++      if (settings.length !== 1) throw new Error('settings_not_unique');
++      settings[0].click(); await new Promise(r => setTimeout(r, 400));
++      model = buttons().find(e => modelLabel.test(e.getAttribute('aria-label') || '') || video && e.matches('.video-model-picker-button'));
++    }
++    if (!model || !(video ? /Veo|Omni/i : /Nano Banana 2\.1/).test(model.textContent || '')) throw new Error(video ? 'video_model_not_verified' : 'image_model_not_verified');
++    const modelOption = [...document.querySelectorAll('[role="option"]')].find(e => visible(e) && /Nano Banana 2\.1/.test(e.textContent || ''));
++    if (!video && modelOption) { modelOption.click(); await new Promise(r => setTimeout(r, 200)); }
++    const pane = model.closest('flow-settings-view');
++    const groups = pane ? [...pane.querySelectorAll('mat-button-toggle-group')] : [];
++    if (groups.length !== 4) throw new Error('image_settings_not_unique');
++    const one = [...groups[video ? 3 : 1].querySelectorAll('button')].filter(e => visible(e) && clean(e.textContent) === 'x1');
++    const aspectButton = [...groups[video ? 2 : 0].querySelectorAll('button')].filter(e => visible(e) && clean(e.textContent).endsWith(task.aspect || '16:9'));
++    if (one.length !== 1 || aspectButton.length !== 1) throw new Error('image_settings_not_unique');
++    if (one[0].getAttribute('aria-checked') !== 'true') one[0].click();
++    const settled = async button => { const deadline = Date.now() + 3000; while (button.getAttribute('aria-checked') !== 'true' && Date.now() < deadline) await new Promise(r => setTimeout(r, 50)); };
++    await settled(one[0]);
++    if (aspectButton[0].getAttribute('aria-checked') !== 'true') aspectButton[0].click();
++    await settled(aspectButton[0]);
++    if (one[0].getAttribute('aria-checked') !== 'true' || aspectButton[0].getAttribute('aria-checked') !== 'true') throw new Error('image_settings_not_unique');
++    const save = buttons().filter(e => /^(Simpan|Save)$/.test(clean(e.textContent)));
++    if (save.length !== 1) throw new Error('settings_not_unique');
++    save[0].click(); await new Promise(r => setTimeout(r, 300));
++    if (blocked()) throw new Error('google_blocked');
++    }
++    if (task.action === 'prepare_image') return snapshot();
++    let verifiedFrame = null;
++    if (frames) {
++      phase = 'frames';
++      const named = (e, re) => re.test(clean(e.getAttribute('aria-label') || '')) || re.test(clean(e.textContent).replace(/^(?:add|movie|videocam|image|arrow_drop_down)\s*/,''));
++      const startSlots = () => [...document.querySelectorAll('button,[role="button"],[data-frame="start"]')].filter(e=>visible(e)&&named(e,/^(?:\+\s*)?(?:Add start frame|Start frame|Tambahkan frame awal|Tambahkan bingkai awal|Frame awal|Bingkai awal)$/i));
++      const modelButtons = () => buttons().filter(e=>/Nano Banana|Veo|Omni/i.test(e.textContent||'') && !/default|default|pembuatan/i.test(e.getAttribute('aria-label')||''));
++      let openedModel = null;
++      if (!startSlots().length) {
++        let frames = buttons().filter(e=>named(e,/^(Frames|Bingkai|Frame)$/i));
++        if (!frames.length) {
++          const models=modelButtons();
++          if(models.length!==1) throw new Error('frames_mode_unavailable');
++          openedModel=models[0]; await nativeControlClick(openedModel); await new Promise(r=>setTimeout(r,250));
++          const videoTab=buttons().filter(e=>named(e,/^(Video)$/i));
++          if(videoTab.length===1) { await nativeControlClick(videoTab[0]); await new Promise(r=>setTimeout(r,200)); }
++          frames=buttons().filter(e=>named(e,/^(Frames|Bingkai|Frame)$/i));
++        }
++        if(frames.length!==1) throw new Error('frames_mode_unavailable');
++        await nativeControlClick(frames[0]); await new Promise(r=>setTimeout(r,250));
++      }
++      // Configure only unambiguous standard-video controls; do not use Agent settings as a substitute.
++      const setChoice=async re=>{
++        const groups=[...document.querySelectorAll('[role="radiogroup"],mat-button-toggle-group,[role="tablist"]')].filter(visible);
++        const matches=groups.map(g=>[...g.querySelectorAll('button,[role="radio"],[role="tab"]')].filter(e=>visible(e)&&named(e,re))).filter(a=>a.length);
++        if(matches.length!==1||matches[0].length!==1) throw new Error('frames_settings_unverified');
++        const b=matches[0][0];
++        if(b.getAttribute('aria-checked')!=='true'&&b.getAttribute('aria-selected')!=='true') await nativeControlClick(b);
++        await new Promise(r=>setTimeout(r,100));
++        if(b.getAttribute('aria-checked')!=='true'&&b.getAttribute('aria-selected')!=='true') throw new Error('frames_settings_unverified');
++      };
++      if(!openedModel) { const models=modelButtons(); if(models.length!==1)throw new Error('frames_settings_unverified');openedModel=models[0];await nativeControlClick(openedModel);await new Promise(r=>setTimeout(r,200)); }
++      await setChoice(new RegExp('^(?:[^0-9]*)(?:'+task.aspect+')$'));
++      await setChoice(/^(?:x|×)?1(?:\s*(?:output|video|hasil))?$/i);
++      const saves=buttons().filter(e=>named(e,/^(Simpan|Save)$/));
++      if(saves.length===1) await nativeControlClick(saves[0]);
++      else if(openedModel?.isConnected) await nativeControlClick(openedModel);
++      await new Promise(r=>setTimeout(r,200));
++      const slots=startSlots();
++      if(slots.length!==1) throw new Error('frames_mode_unavailable');
++      const slot=slots[0];
++      // A populated start frame is reused only when decoded pixels match the requested scene.
++      const pixels=async url=>{const r=await fetch(url,{signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error('start_frame_unverified');const b=await createImageBitmap(await r.blob()),c=new OffscreenCanvas(64,64),ctx=c.getContext('2d');ctx.drawImage(b,0,0,64,64);b.close();return ctx.getImageData(0,0,64,64).data;};
++      const frameImage=()=>[...slot.querySelectorAll('img')].find(e=>e.naturalWidth>=64);
++      const matches=async()=>{const img=frameImage();if(!img)return false;const a=await pixels(img.currentSrc||img.src),b=await pixels(refs[0]);let delta=0;for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);return delta/a.length<=12;};
++      if(frameImage()&&!await matches()) throw new Error('existing_attachments');
++      if(!frameImage()) {
++        const blob=await(await fetch(refs[0])).blob(),transfer=new DataTransfer();
++        transfer.items.add(new File([blob],'kisara-start-frame.'+(blob.type.split('/')[1]||'png'),{type:blob.type}));
++        const inputs=[...slot.querySelectorAll('input[type="file"]')].filter(e=>!e.disabled&&/image|png|jpeg|webp/i.test(e.accept));
++        if(inputs.length===1){inputs[0].files=transfer.files;inputs[0].dispatchEvent(new Event('change',{bubbles:true}));}
++        else for(const type of ['dragenter','dragover','drop'])slot.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:transfer}));
++        const end=Date.now()+60000;
++        while(!frameImage()&&Date.now()<end){if(blocked())throw new Error('google_blocked');await new Promise(r=>setTimeout(r,250));}
++      }
++      if(!await matches()) throw new Error('start_frame_unverified');
++      verifiedFrame = { image: frameImage(), source: frameImage()?.currentSrc || frameImage()?.src };
++      const endSlots=buttons().filter(e=>named(e,/^(?:Add end frame|End frame|Tambahkan frame akhir|Tambahkan bingkai akhir|Frame akhir|Bingkai akhir)$/i));
++      if(endSlots.some(e=>e.querySelector('img')))throw new Error('existing_attachments');
++    }
++    // Closing settings may replace the editor; never type into a detached node.
++    const liveEditors = editors().filter(e => /^(Apa yang ingin Anda buat\?|What do you want to create\?)$/.test(e.getAttribute('aria-label') || ''));
++    if (liveEditors.length !== 1) throw new Error('prompt_not_found');
++    promptBox = liveEditors[0];
++    if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
++    // Upload through the normal composer, and verify actual attachments before any paid submit.
++    let composer = frames ? null : promptBox.parentElement;
++    while (composer && !composer.querySelector('[aria-label="Mulai pembuatan"],[aria-label="Start generation"]')) composer = composer.parentElement;
++    if (!composer || composer === document.body) {
++      if (refs.length && !frames) throw new Error('reference_upload_failed');
++    } else {
++      const liveComposer = () => { let p=editors()[0]?.parentElement;while(p&&!p.querySelector('[aria-label="Mulai pembuatan"],[aria-label="Start generation"]'))p=p.parentElement;return p&&p!==document.body?p:composer; };
++      const thumbnails = () => [...liveComposer().querySelectorAll('img')].filter(e => visible(e) && !e.closest('flow-image-tile,flow-video-tile') && e.naturalWidth >= 64);
++      let reuseAttachments = false;
++      if (thumbnails().length) {
++        if (thumbnails().length === refs.length) {
++          try {
++            const pixels = async url => {
++              const response=await fetch(url,{signal:AbortSignal.timeout(10000)});
++              if(!response.ok)throw new Error('reference_upload_failed');
++              const bitmap=await createImageBitmap(await response.blob()),canvas=new OffscreenCanvas(64,64),ctx=canvas.getContext('2d');
++              ctx.drawImage(bitmap,0,0,64,64);bitmap.close();return ctx.getImageData(0,0,64,64).data;
++            };
++            reuseAttachments = true;
++            for (let i=0;i<refs.length;i++) {
++              const a=await pixels(thumbnails()[i].currentSrc||thumbnails()[i].src),b=await pixels(refs[i]);let delta=0;
++              for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);
++              if(delta/a.length>12)reuseAttachments=false;
++            }
++          } catch { reuseAttachments = false; }
++        }
++        if (!reuseAttachments) throw new Error('existing_attachments');
++      }
++      if (refs.length && !reuseAttachments) {
++        const transfer = new DataTransfer();
++        const referenceNames = [];
++        for (const [i, ref] of refs.entries()) {
++          if (typeof ref !== 'string' || ref.length > 28*1024*1024 || !/^data:image\/(png|jpeg|webp);base64,/.test(ref)) throw new Error('unsupported_input');
++          const blob = await (await fetch(ref)).blob();
++          const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
++          const hash = [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,16);
++          const name = 'kisara-' + hash + '-reference-' + (i+1) + '.' + (blob.type.split('/')[1] || 'png');
++          referenceNames.push(name);
++          transfer.items.add(new File([blob], name, {type:blob.type}));
++        }
++        const inputs = [...composer.querySelectorAll('input[type="file"]')].filter(e => !e.disabled && /image|png|jpg|jpeg|webp/i.test(e.accept));
++        if (inputs.length === 1) {
++          inputs[0].files = transfer.files;
++          inputs[0].dispatchEvent(new Event('change', {bubbles:true}));
++        } else {
++          for (const type of ['dragenter','dragover','drop']) promptBox.dispatchEvent(new DragEvent(type, {bubbles:true,cancelable:true,dataTransfer:transfer}));
++        }
++        const uploadDeadline = Date.now() + 60000;
++        let uploaded = false, pickerOpened = false, selectedReferences = false;
++        const sentAt = Date.now();
++        while (Date.now() < uploadDeadline) {
++          if (blocked()) throw new Error('google_blocked');
++          // The agent uploads dropped files into its library first; attach the exact content-named assets.
++          if (!thumbnails().length && Date.now() - sentAt > 1500) {
++            if (!pickerOpened) {
++              const add = buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
++              if (add.length === 1) { if (clean(add[0].textContent) !== 'close') await nativeControlClick(add[0]); pickerOpened = true; }
++            }
++            if (pickerOpened && !selectedReferences) {
++              const candidates = referenceNames.map(name=>buttons().filter(e=>clean(e.textContent).startsWith(name)));
++              if (candidates.every(a=>a.length>=1)) {
++                for (const items of candidates) await nativeControlClick(items[0]);
++                selectedReferences = true;
++              }
++            }
++            if (selectedReferences) {
++                const addToPrompt = buttons().filter(e=>/^(Tambahkan ke perintah|Add to prompt)$/.test(clean(e.textContent)));
++                if (addToPrompt.length === 1 && !disabled(addToPrompt[0])) { await nativeControlClick(addToPrompt[0]); pickerOpened = false; }
++            }
++          }
++          if (thumbnails().length === refs.length && ![...liveComposer().querySelectorAll('[role="progressbar"],mat-spinner')].some(visible)) { uploaded = true; break; }
++          await new Promise(r=>setTimeout(r,250));
++        }
++        if (!uploaded) throw new Error('reference_upload_failed');
++        // Upload can reconstruct the editor; use the live node.
++        const boxes = editors();
++        if (boxes.length !== 1) throw new Error('prompt_not_found');
++        promptBox = boxes[0];
++        if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
++      }
++    }
++    phase = 'input';
++    const mediaId = img => img.dataset.mediaId || (img.currentSrc || img.src).match(/flow-content\.google\/(?:image|video)\/([a-f0-9-]{36})/i)?.[1] || (img.currentSrc || img.src || '').replace(/=[a-z0-9-]+$/i,'');
++    const images = () => [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')].filter(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144 && !e.closest('flow-video-tile')?.querySelector('flow-pending-tile'));
++    const baselineImages = () => [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')];
++    const before = new Set(baselineImages().map(mediaId));
++    const expectedRatio = task.aspect === '9:16' ? 9/16 : 16/9;
++    const validOutput = e => video || Math.abs(e.naturalWidth/e.naturalHeight-expectedRatio)/expectedRatio < .08;
++    if (!sameDraft(promptBox)) {
++    promptBox.focus(); const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(promptBox); selection.removeAllRanges(); selection.addRange(range);
++    if (!document.execCommand('insertText', false, command)) throw new Error('prompt_input_failed');
++    promptBox.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: command }));
++    }
++    phase = 'ready';
++    const readyDeadline = Date.now() + 12000;
++    let submit;
++    while (Date.now() < readyDeadline) {
++      if (blocked()) throw new Error('google_blocked');
++      if (!promptBox.isConnected || !sameDraft(promptBox)) throw new Error('prompt_input_failed');
++      const choices = submitButtons();
++      if (choices.length === 1 && !disabled(choices[0])) { submit = choices[0]; break; }
++      await new Promise(r => setTimeout(r, 100));
++    }
++    if (!submit) throw new Error('submit_not_ready');
++    const idleDeadline = Date.now() + 30000;
++    while (busy() && Date.now() < idleDeadline) await new Promise(r=>setTimeout(r,250));
++    if (busy()) throw new Error('browser_busy');
++    if (blocked()) throw new Error('google_blocked');
++    const collect = async () => {
++    phase = 'submitted';
++    clicked = true;
++    const confirmDeadline = Date.now() + 12000;
++    let confirmed = false;
++    while (Date.now() < confirmDeadline) {
++      if (blocked()) throw new Error('google_blocked');
++      if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
++      if (busy() || images().some(e => !before.has(mediaId(e))) || promptBox.isConnected && !(promptBox.textContent || '').trim()) { confirmed = true; break; }
++      await new Promise(r => setTimeout(r, 150));
++    }
++    if (!confirmed) throw new Error('submit_unconfirmed');
++    phase = 'waiting';
++    const deadline = Date.now() + (video ? 600000 : 240000);
++    while (Date.now() < deadline) {
++      if (blocked() || /We noticed some unusual activity|aktivitas tidak biasa|insufficient credits|kredit tidak cukup|requesting generations too quickly/i.test(document.body.innerText)) throw new Error('google_blocked');
++      if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
++      const fresh = [...new Map(images().filter(e => !before.has(mediaId(e)) && validOutput(e)).map(e => [mediaId(e), e])).values()];
++      if (fresh.length === 1 && !busy()) {
++        phase = 'download';
++        const image = fresh[0]; let url = image.currentSrc || image.src;
++        if (video) {
++          const tile = image.closest('flow-video-tile');
++          tile.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
++          tile.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));
++          await new Promise(r=>setTimeout(r,300));
++          const player = tile.querySelector('video');
++          url = player?.currentSrc || player?.src;
++          if (!url) { await new Promise(r=>setTimeout(r,600)); continue; }
++        }
++        if (!video && /^https:\/\/flow\.google\.com\/asb\/[^?#]+=[a-z0-9-]+$/i.test(url)) url = url.replace(/=[a-z0-9-]+$/i, '=s0');
++        if (video && /^https:\/\//.test(url) && new URL(url).origin === location.origin && new URL(url).pathname.startsWith('/asb/')) return {browserMediaUrl:url,width:image.naturalWidth,height:image.naturalHeight};
++        if (/^https:\/\//.test(url) && new URL(url).origin !== location.origin) return { mediaUrl: url, width: image.naturalWidth, height: image.naturalHeight };
++        if (url.startsWith('blob:') || new URL(url).origin === location.origin) {
++          const response = await fetch(url, { signal: AbortSignal.timeout(30000) }); const blob = await response.blob();
++          if (!response.ok || !blob.type.startsWith(video ? 'video/' : 'image/') || blob.size > 40 * 1024 * 1024) throw new Error('media_download_failed');
++          const mediaUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob); });
++          return { mediaUrl, width: image.naturalWidth, height: image.naturalHeight };
++        }
++      }
++      if (fresh.length > 1) throw new Error('multiple_outputs');
++      await new Promise(r => setTimeout(r, 600));
++    }
++    throw new Error(busy() ? 'pending_timeout' : 'result_timeout');
++    };
++    if (task.nativeSubmit) {
++      globalThis.kisaraFlowNativePoint = () => {
++        try {
++          if (blocked()) throw new Error('google_blocked');
++          if (busy()) throw new Error('browser_busy');
++          if (frames && (!verifiedFrame?.image?.isConnected || (verifiedFrame.image.currentSrc || verifiedFrame.image.src) !== verifiedFrame.source)) throw new Error('submit_not_ready');
++          if (!promptBox.isConnected || !sameDraft(promptBox)) throw new Error('prompt_input_failed');
++          const choices = submitButtons();
++          if (choices.length !== 1 || disabled(choices[0])) throw new Error('submit_not_ready');
++          // Uploaded references may finish rendering after preparation; freeze baseline at the actual submit.
++          for (const image of baselineImages()) before.add(mediaId(image));
++          const button = choices[0];
++          button.scrollIntoView({ block: 'center', inline: 'center' });
++          button.focus();
++          const rect = button.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
++          const top = document.elementFromPoint(x, y);
++          if (!top || !button.contains(top) || disabled(button)) throw new Error('submit_not_ready');
++          return { x, y };
++        } catch (error) { return { failure: { code: ['google_blocked','browser_busy','prompt_input_failed','submit_not_ready'].includes(error.message) ? error.message : 'submit_not_ready', stage: 'ready', submitted: false } }; }
++      };
++      globalThis.kisaraFlowRecover = async () => {
++        try { return await collect(); }
++        catch(error) { return {failure:{code:['google_blocked','approval_required','pending_timeout','result_timeout','multiple_outputs','media_download_failed'].includes(error.message)?error.message:'result_uncertain',stage:phase,submitted:true}}; }
++      };
++      globalThis.kisaraFlowCollect = async () => {
++        delete globalThis.kisaraFlowCollect;
++        delete globalThis.kisaraFlowNativePoint;
++        try { return await collect(); }
++        catch (error) { return { failure: { code: ['google_blocked','approval_required','submit_unconfirmed','pending_timeout','result_timeout','multiple_outputs','media_download_failed'].includes(error.message) ? error.message : phase === 'download' ? 'media_download_failed' : 'result_uncertain', stage: phase, submitted: true } }; }
++      };
++      return { nativeSubmit: true };
++    }
++    throw new Error('native_input_unavailable');
++  }
++  if (!['inspect', 'inspect_upload', 'settings'].includes(task.action)) throw new Error('adapter_not_ready');
++  return snapshot();
++};
++
++  return async task => {
++    phase = 'inspect'; clicked = false;
++    try { return await run(task); }
++    catch (error) {
++      if (error?.message === 'quota_exhausted') return { preSubmitError: 'quota_exhausted' };
++      const allowed = ['frames_mode_unavailable','frames_settings_unverified','start_frame_unverified','reference_upload_failed','existing_attachments','video_model_not_verified','native_input_unavailable','submit_unconfirmed','pending_timeout','result_timeout','quota_exhausted','google_blocked','approval_required','browser_busy','unsupported_input','prompt_not_found','existing_draft','settings_not_unique','image_model_not_verified','image_settings_not_unique','prompt_input_failed','submit_not_ready','media_download_failed','multiple_outputs','result_uncertain'];
++      const code = allowed.includes(error?.message) ? error.message : phase === 'download' ? 'media_download_failed' : 'browser_not_ready';
++      return { failure: { code, stage: phase, submitted: clicked } };
++    }
++  };
++})();
+diff --git a/extension/locales.json b/extension/locales.json
+index be41418..ed4c34e 100644
+--- a/extension/locales.json
++++ b/extension/locales.json
+@@ -16,7 +16,10 @@
+     "请填写 Flow2API API Key。": "请填写 Flow2API API Key。",
+     "保存失败：{error}": "保存失败：{error}",
+     "已保存，后台连接会自动重连。": "已保存，后台连接会自动重连。",
+-    "语言偏好保存失败：{error}": "语言偏好保存失败：{error}"
++    "语言偏好保存失败：{error}": "语言偏好保存失败：{error}",
++    "worker_connected": "Worker 已连接服务器，尚未验证 Google 生成。",
++    "worker_disconnected": "Worker 未连接，请检查本地服务器、WebSocket 地址和 API Key。",
++    "worker_unavailable": "Worker 无响应，请在 chrome://extensions 重新加载扩展。"
+   },
+   "en": {
+     "Flow2API Captcha Worker Settings": "Flow2API Captcha Worker Settings",
+@@ -35,6 +38,31 @@
+     "请填写 Flow2API API Key。": "Enter your Flow2API API key.",
+     "保存失败：{error}": "Unable to save settings: {error}",
+     "已保存，后台连接会自动重连。": "Settings saved. The background connection will reconnect automatically.",
+-    "语言偏好保存失败：{error}": "Unable to save language preference: {error}"
++    "语言偏好保存失败：{error}": "Unable to save language preference: {error}",
++    "worker_connected": "Worker connected to the server. Google generation has not been verified.",
++    "worker_disconnected": "Worker not connected. Check the local server, WebSocket address and API key.",
++    "worker_unavailable": "Worker not responding. Reload the extension in chrome://extensions."
++  },
++  "id": {
++    "Flow2API Captcha Worker Settings": "Pengaturan Worker Flow2API",
++    "界面语言": "Bahasa tampilan",
++    "给当前浏览器实例设置一个独立的路由键，Flow2API 后端就能把对应账号的验证码请求固定发到这个实例。": "Beri profil Chrome ini kode akun yang unik agar permintaan dari akun Google yang sesuai masuk ke profil ini.",
++    "Route Key": "Kode akun (Route Key)",
++    "Client Label": "Nama profil",
++    "WebSocket URL": "Alamat WebSocket",
++    "例如 9223": "Contoh: akun-1",
++    "例如 browser-9223": "Contoh: akun-1",
++    "管理后台里的 API Key": "API key Flow2API dari AKSES-LOKAL.txt",
++    "保存": "Simpan",
++    "管理台 token 里填写同样的": "Di Kisara, pasangkan akun Google dengan",
++    "，比如 9223 对 9223。后端会使用 API Key 校验 WebSocket 连接。": " yang sama, misalnya akun-1. Server memeriksa koneksi memakai API key Flow2API.",
++    "WebSocket URL 必须以 ws:// 或 wss:// 开头。": "Alamat WebSocket harus diawali ws:// atau wss://.",
++    "请填写 Flow2API API Key。": "Isi API key Flow2API terlebih dahulu.",
++    "保存失败：{error}": "Gagal menyimpan: {error}",
++    "已保存，后台连接会自动重连。": "Pengaturan tersimpan. Worker akan mencoba menyambung kembali.",
++    "语言偏好保存失败：{error}": "Bahasa gagal disimpan: {error}",
++    "worker_connected": "Worker tersambung ke server. Ini belum membuktikan generasi Google berhasil.",
++    "worker_disconnected": "Worker belum tersambung. Periksa server lokal, alamat WebSocket, dan API key.",
++    "worker_unavailable": "Worker tidak merespons. Muat ulang ekstensi di chrome://extensions."
+   }
+ }
+diff --git a/extension/manifest.json b/extension/manifest.json
+index f69c33e..e1ebbef 100644
+--- a/extension/manifest.json
++++ b/extension/manifest.json
+@@ -1,15 +1,19 @@
+ {
+   "manifest_version": 3,
+   "name": "Flow2API Captcha Worker",
+-  "version": "1.0.0",
+-  "description": "Generate Google Labs reCAPTCHA Enterprise tokens for Flow2API.",
++  "version": "1.5.1",
++  "description": "Penghubung worker Chrome untuk generasi Google Flow melalui server lokal.",
+   "permissions": [
+     "storage",
+     "tabs",
+-    "scripting"
++    "scripting",
++    "debugger"
+   ],
+   "host_permissions": [
+-    "https://labs.google/*"
++    "https://labs.google/*",
++    "https://flow.google.com/*",
++    "https://*.googlevideo.com/*",
++    "https://flow-content.google/*"
+   ],
+   "background": {
+     "service_worker": "background.js"
+@@ -25,5 +29,8 @@
+       "run_at": "document_idle"
+     }
+   ],
+-  "options_page": "options.html"
++  "options_page": "options.html",
++  "action": {
++    "default_title": "Buka pengaturan Worker Flow"
++  }
+ }
+diff --git a/extension/options.html b/extension/options.html
+index 592e77c..a668a58 100644
+--- a/extension/options.html
++++ b/extension/options.html
+@@ -88,6 +88,7 @@
+     <div class="panel">
+       <div class="language">
+         <select id="language" aria-label="界面语言" data-i18n-aria-label="界面语言">
++          <option value="id">Bahasa Indonesia</option>
+           <option value="zh-CN">中文</option>
+           <option value="en">English</option>
+         </select>
+@@ -102,13 +103,14 @@
+       <input id="clientLabel" type="text" placeholder="例如 browser-9223" data-i18n-placeholder="例如 browser-9223">
+ 
+       <label for="serverUrl" data-i18n="WebSocket URL">WebSocket URL</label>
+-      <input id="serverUrl" type="text" placeholder="ws://127.0.0.1:8000/captcha_ws">
++      <input id="serverUrl" type="text" placeholder="ws://127.0.0.1:8765/captcha_ws">
+ 
+       <label for="apiKey">Flow2API API Key</label>
+       <input id="apiKey" type="password" placeholder="管理后台里的 API Key" data-i18n-placeholder="管理后台里的 API Key">
+ 
+       <button id="saveBtn" type="button" data-i18n="保存">保存</button>
+       <div class="status" id="status"></div>
++      <div class="status" id="connectionStatus" role="status" aria-live="polite"></div>
+       <div class="hint"><span data-i18n="管理台 token 里填写同样的">管理台 token 里填写同样的</span> <code>Route Key</code><span data-i18n="，比如 9223 对 9223。后端会使用 API Key 校验 WebSocket 连接。">，比如 9223 对 9223。后端会使用 API Key 校验 WebSocket 连接。</span></div>
+     </div>
+   </div>
+diff --git a/extension/options.js b/extension/options.js
+index e4a79e3..045cb5e 100644
+--- a/extension/options.js
++++ b/extension/options.js
+@@ -1,12 +1,12 @@
+ const DEFAULT_SETTINGS = {
+-  serverUrl: "ws://127.0.0.1:8000/captcha_ws",
++  serverUrl: "ws://127.0.0.1:8765/captcha_ws",
+   apiKey: "",
+   routeKey: "",
+   clientLabel: ""
+ };
+ 
+ const $ = (id) => document.getElementById(id);
+-let locale = "zh-CN";
++let locale = "id";
+ let translations = {};
+ let statusMessage = null;
+ 
+@@ -45,9 +45,9 @@ async function loadLanguage() {
+     .catch(() => ({}));
+   const [settings, messages] = await Promise.all([stored, catalog]);
+   translations = messages;
+-  const candidates = [settings.uiLanguage, ...(navigator.languages || [navigator.language])];
+-  const language = candidates.find((value) => /^(zh|en)(-|$)/i.test(value || ""));
+-  locale = /^en(-|$)/i.test(language || "") ? "en" : "zh-CN";
++  const candidates = [settings.uiLanguage || "id", ...(navigator.languages || [navigator.language])];
++  const language = candidates.find((value) => /^(id|zh|en)(-|$)/i.test(value || ""));
++  locale = /^id(-|$)/i.test(language || "") ? "id" : /^en(-|$)/i.test(language || "") ? "en" : "zh-CN";
+   renderLanguage();
+ }
+ 
+@@ -76,6 +76,19 @@ function isValidWsUrl(value) {
+   }
+ }
+ 
++async function refreshConnection() {
++  try {
++    const result = await chrome.runtime.sendMessage({ type: 'flow_worker_connect' });
++    const connected = result?.connected === true;
++    const element = $('connectionStatus');
++    element.textContent = translate(connected ? 'worker_connected' : 'worker_disconnected');
++    element.style.color = connected ? '#065f46' : '#b91c1c';
++  } catch {
++    $('connectionStatus').textContent = translate('worker_unavailable');
++    $('connectionStatus').style.color = '#b91c1c';
++  }
++}
++
+ function loadSettings() {
+   chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
+     const settings = normalizeSettings(stored);
+@@ -109,15 +122,18 @@ function saveSettings() {
+       return;
+     }
+     setStatus("已保存，后台连接会自动重连。");
++    void refreshConnection();
+   });
+ }
+ 
+ document.addEventListener("DOMContentLoaded", async () => {
+   await loadLanguage();
+   loadSettings();
++  void refreshConnection();
++  setInterval(() => void refreshConnection(), 3000);
+   $("saveBtn").addEventListener("click", saveSettings);
+   $("language").addEventListener("change", () => {
+-    locale = $("language").value === "en" ? "en" : "zh-CN";
++    locale = ["id", "en", "zh-CN"].includes($("language").value) ? $("language").value : "id";
+     renderLanguage();
+     chrome.storage.local.set({ uiLanguage: locale }, () => {
+       if (chrome.runtime.lastError) {
+diff --git a/src/api/admin.py b/src/api/admin.py
+index 91f9708..b1e5618 100644
+--- a/src/api/admin.py
++++ b/src/api/admin.py
+@@ -17,6 +17,7 @@ import urllib.error
+ import urllib.request
+ from urllib.parse import urlparse
+ from curl_cffi.requests import AsyncSession
++from .kisara_routes import create_kisara_router
+ from ..core.auth import AuthManager
+ from ..core.database import Database
+ from ..core.config import (
+@@ -49,6 +50,7 @@ except ImportError:
+     httpx = None
+ 
+ router = APIRouter()
++router.include_router(create_kisara_router(lambda: db, lambda: token_manager))
+ 
+ # Dependency injection
+ token_manager: TokenManager = None
+@@ -1716,7 +1718,10 @@ async def logout(response: Response, token: str = Depends(verify_admin_token)):
+ async def health_check():
+     """Public health check endpoint - no auth required"""
+     try:
+-        return await build_public_health_snapshot(db)
++        snapshot = await build_public_health_snapshot(db)
++        snapshot["kisara_failover"] = True
++        snapshot["kisara_setup"] = True
++        return snapshot
+     except Exception:
+         return {"backend_running": True, "has_active_tokens": False}
+ 
+diff --git a/src/services/generation_handler.py b/src/services/generation_handler.py
+index 67e5394..fefdcc6 100644
+--- a/src/services/generation_handler.py
++++ b/src/services/generation_handler.py
+@@ -1953,6 +1953,7 @@ class GenerationHandler:
+             error_msg = f"生成失败: {str(e)}"
+             debug_logger.log_error(f"[GENERATION] 生成失败: {error_msg}")
+             if token:
++                self.load_balancer.kisara_policy.limited(token.id, model, str(e))
+                 if self._should_count_token_error(e):
+                     await self.token_manager.record_error(token.id)
+                 else:
+diff --git a/src/services/load_balancer.py b/src/services/load_balancer.py
+index 88627e6..385d995 100644
+--- a/src/services/load_balancer.py
++++ b/src/services/load_balancer.py
+@@ -1,3 +1,5 @@
++from pathlib import Path
++from .kisara_policy import AccountPolicy
+ """Load balancing module for Flow2API"""
+ 
+ import asyncio
+@@ -21,6 +23,7 @@ class LoadBalancer:
+     def __init__(
+         self, token_manager, concurrency_manager: Optional[ConcurrencyManager] = None
+     ):
++        self.kisara_policy = AccountPolicy(Path(__file__).resolve().parents[2] / "data" / "kisara-accounts.json")
+         self.token_manager = token_manager
+         self.concurrency_manager = concurrency_manager
+         self._image_pending: Dict[int, int] = {}
+@@ -282,7 +285,9 @@ class LoadBalancer:
+ 
+         # 最低 in-flight 优先；有并发上限时，剩余槽位更多的 token 优先；最后随机打散
+         call_mode = config.call_logic_mode
+-        if call_mode == "polling":
++        if self.kisara_policy:
++            available_tokens = self.kisara_policy.candidates(available_tokens, model)
++        elif call_mode == "polling":
+             scenario = "default"
+             if for_image_generation:
+                 scenario = "image"
+@@ -360,6 +365,7 @@ class LoadBalancer:
+                 f"[LOAD_BALANCER] ✅ 已选择Token {token.id} ({token.email}) - "
+                 f"余额: {token.credits}, inflight={item['inflight']}"
+             )
++            self.kisara_policy.selected(token.id, model)
+             return token
+ 
+         debug_logger.log_info(
+@@ -367,6 +373,9 @@ class LoadBalancer:
+         )
+         return None
+ 
++    def clear_quota_cooldown(self, token_id, model):
++        self.kisara_policy.clear(token_id, model)
++
+     async def get_unavailable_reason(
+         self,
+         *,

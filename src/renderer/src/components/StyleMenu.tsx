@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
 import { VISUAL_STYLES, getStyle, type StyleCategory } from '@shared/styles'
+import { FlowStyleReference } from './FlowStyleReference'
 import { Popover } from './Popover'
 import { StyleSwatch } from './StyleArt'
 import { cx } from './ui'
@@ -67,7 +68,7 @@ export function StyleMenu({ value, onChange }: { value: string; onChange: (id: s
           if (why === 'escape') trigger.current?.focus()
         }}
         width={880} maxHeight={520} label="Pilih gaya visual">
-        <div className="flex items-end gap-4 border-b border-line px-4 pb-3 pt-3.5">
+        <div className="flex shrink-0 items-end gap-4 border-b border-line px-4 pb-3 pt-3.5">
           <div className="flex flex-col">
             <span className="text-[15px] font-semibold">Gaya visual</span>
             <span className="text-xs text-muted">Dipakai untuk semua gambar dan lembar karakter di proyek ini.</span>
@@ -77,6 +78,7 @@ export function StyleMenu({ value, onChange }: { value: string; onChange: (id: s
             <span className="font-semibold text-ink">{shown.name}</span> · cocok untuk {shown.niche.toLowerCase()}
           </span>
         </div>
+        <FlowStyleReference />
         <div
           ref={grid}
           role="radiogroup"

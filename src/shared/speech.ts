@@ -40,15 +40,26 @@ export interface DialogueLine {
   emotion?: string
 }
 
+/** Remove speaker headings, not names that are part of a spoken sentence. Keep vocal tags. */
+export function stripSpeakerLabels(text: string, speakers: string[] = []): string {
+  const names = [...new Set(['Narator', 'Narrator', ...speakers].map(name => name.trim()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length).map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const boundary = String.raw`(^|[\r\n]|[.!?…][”"’]?\s+|[”"]\s+)`
+  const heading = new RegExp(boundary + String.raw`[ \t]*((?:<[^<>]{1,40}>\s*)*)(?:\*\*)?(?:` + names + String.raw`)(?:\*\*)?\s*(?::(?:\*\*)?\s*|,\s*(?=(?:<[^<>]{1,40}>\s*)*[“"‘]))`, 'giu')
+  return text.replace(heading, '$1$2').trim()
+}
+
+
 /** Keep dialogue in the spoken script itself, so every TTS provider, caption and export receives it. */
 export function composeSceneSpeech(narration: string, dialogue: DialogueLine[], vocalTags: boolean): string {
   const lines = dialogue.filter((line) => line && typeof line.speaker === 'string' && typeof line.text === 'string' && line.speaker.trim() && line.text.trim())
-  const spoken = [narration.trim()]
+  const base = stripSpeakerLabels(narration, lines.map(line => line.speaker))
+  const spoken = [base]
   for (const line of lines) {
     const text = stripVoiceTags(line.text).replace(/^[“”"]+|[“”"]+$/g, '')
-    if (!text || stripVoiceTags(narration).includes(text)) continue
+    if (!text || stripVoiceTags(base).includes(text)) continue
     const tag = vocalTags && ['whispers', 'sad', 'angry', 'excited', 'gasp'].includes(line.emotion ?? '') ? `<${line.emotion}> ` : ''
-    spoken.push(`${stripVoiceTags(line.speaker)}, ${tag}“${text}”`)
+    spoken.push(`${tag}“${text}”`)
   }
   return spoken.filter(Boolean).join(' ')
 }

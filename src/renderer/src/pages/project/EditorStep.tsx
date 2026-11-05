@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { replaceCaptionWords } from '@shared/captions'
-import { overlayEnd } from '@shared/overlays'
+import { overlayEnd, splitOverlay } from '@shared/overlays'
 import { musicSpan } from '@shared/timeline'
 import { soundSpan } from '@shared/sound'
 import { confirmDialog, cx } from '../../components/ui'
@@ -131,7 +131,7 @@ export function EditorStep() {
       const at = Math.round(t * 100) / 100
       const second = crypto.randomUUID()
       updateEditor({
-        overlays: overlays.flatMap((o) => (o.id === target.id ? [{ ...o, end: at }, { ...o, id: second, start: at }] : [o]))
+        overlays: overlays.flatMap((o) => (o.id === target.id ? splitOverlay(o, at, second) : [o]))
       })
       selectOverlay(second)
       return

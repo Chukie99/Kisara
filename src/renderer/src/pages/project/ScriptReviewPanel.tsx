@@ -30,6 +30,7 @@ export function ScriptReviewPanel({ onScene }: { onScene: (clipId: string) => vo
     finally { if (useProject.getState().project?.id === id) setBusy(false) }
   }
   return <section aria-label="Pemeriksaan kualitas naskah" className="rounded-xl border border-line bg-surface p-4">
+    {project.editor.scriptReviewPending && !current && <p role="alert" className="mb-3 rounded-lg border border-line bg-surface p-3 text-sm"><strong>Pemeriksaan AI belum selesai.</strong> {project.editor.scriptReviewPending}</p>}
     <details>
       <summary className="cursor-pointer text-sm font-semibold">Periksa naskah <span className="ml-2 font-normal text-muted">{findings.length ? findings.length + ' hal untuk ditinjau' : 'Tidak ada masalah pola yang terdeteksi'}</span></summary>
       <div className="mt-4 flex flex-col gap-3">

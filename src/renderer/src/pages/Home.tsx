@@ -1,9 +1,13 @@
+import type { ContentFormat, FormatPlan } from '@shared/contentFormat'
+import { matchingFormatPlan } from '@shared/contentFormat'
+import { FormatChoice, FormatOutline } from '../components/ContentFormat'
+import { Brainstorm } from '../components/Brainstorm'
 import { SourceEditor, SourceReview } from '../components/SourceEditor'
 import { DEFAULT_SOURCE_OPTIONS } from '@shared/sourceOptions'
 import type { SourceOptions } from '@shared/types'
 import { StoryPacing } from '../components/StoryPacing'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowRight, Clapperboard, Copy, FolderOpen, Link2, MoreHorizontal, Plus, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Clapperboard, Copy, FolderOpen, Link2, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { DURATIONS, IDEA_TOPICS, LANGUAGES, llmName } from '@shared/models'
 import { getStyle } from '@shared/styles'
 import type { ApiProvider, AppSettings, AspectRatio, KeyStatus, KeyTestResult, NewProjectInput, ProjectStatus, ProjectSummary, TtsProvider } from '@shared/types'
@@ -43,7 +47,8 @@ const ASPECTS: SelectOption<AspectRatio>[] = [
 
 interface HomeDraft {
   title: string; synopsis: string; brief: NewProjectInput['storyBrief']; durationSec: number; language: string
-  aspectRatio: AspectRatio; styleId: string; tts: TtsProvider; entryMode: 'source' | 'manual'; showSource: boolean
+  aspectRatio: AspectRatio; styleId: string; tts: TtsProvider; entryMode: 'source' | 'manual' | 'brainstorm'; showSource: boolean
+  contentFormat: ContentFormat; durationMode: 'auto'|'manual'; formatPlan?:FormatPlan; niche:string
   sourceInput: SourceOptions; link: string; linkNote: string | null; linkError: string | null
 }
 // Keep an unfinished draft across Settings navigation, without storing source material in browser storage.
@@ -62,9 +67,13 @@ export function Home() {
   const [query, setQuery] = useState('')
   const [synopsis, setSynopsis] = useState(initialDraft?.synopsis ?? '')
   const [title, setTitle] = useState(initialDraft?.title ?? '')
-  const [entryMode, setEntryMode] = useState<'source' | 'manual'>(initialDraft?.entryMode ?? 'source')
+  const [entryMode, setEntryMode] = useState<'source' | 'manual' | 'brainstorm'>(initialDraft?.entryMode ?? 'brainstorm')
   const [showSource, setShowSource] = useState(initialDraft?.showSource ?? false)
   const [brief, setBrief] = useState<NewProjectInput['storyBrief']>(initialDraft?.brief)
+  const [contentFormat,setContentFormat]=useState<ContentFormat>(initialDraft?.contentFormat ?? 'long')
+  const [durationMode,setDurationMode]=useState<'auto'|'manual'>(initialDraft?.durationMode ?? 'auto')
+  const [formatPlan,setFormatPlan]=useState<FormatPlan|undefined>(initialDraft?.formatPlan)
+  const [niche,setNiche]=useState(initialDraft?.niche ?? 'finance')
   const [durationSec, setDurationSec] = useState(initialDraft?.durationSec ?? 60)
   const [language, setLanguage] = useState(initialDraft?.language ?? 'id')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(initialDraft?.aspectRatio ?? '16:9')
@@ -72,16 +81,17 @@ export function Home() {
   const [tts, setTts] = useState<TtsProvider>(initialDraft?.tts ?? 'gemini')
   const [creating, setCreating] = useState(false)
   const [ideaBusy, setIdeaBusy] = useState(false)
+  const [brainstormCategory, setBrainstormCategory] = useState<string|null>(null)
   // "From a YouTube link": the video is read for its words, then distilled into a fresh idea.
   const [sourceInput, setSourceInput] = useState<SourceOptions>(initialDraft?.sourceInput ?? { ...DEFAULT_SOURCE_OPTIONS })
   const [link, setLink] = useState(initialDraft?.link ?? '')
   const [linkBusy, setLinkBusy] = useState(false)
   const [linkNote, setLinkNote] = useState<string | null>(initialDraft?.linkNote ?? null)
   const [linkError, setLinkError] = useState<string | null>(initialDraft?.linkError ?? null)
-  const draft = useRef({ title, synopsis, language })
-  draft.current = { title, synopsis, language }
+  const draft = useRef({ title, synopsis, language, contentFormat, durationMode, durationSec, aspectRatio, styleId, tts })
+  draft.current = { title, synopsis, language, contentFormat, durationMode, durationSec, aspectRatio, styleId, tts }
   const draftToRemember = useRef<HomeDraft | null>(null)
-  draftToRemember.current = { title, synopsis, brief, durationSec, language, aspectRatio, styleId, tts, entryMode, showSource, sourceInput, link, linkNote, linkError }
+  draftToRemember.current = { title, synopsis, brief, durationSec, language, aspectRatio, styleId, tts, entryMode, showSource, contentFormat, durationMode, formatPlan, niche, sourceInput, link, linkNote, linkError }
   useEffect(() => () => { if (rememberDraft.current) homeDraft = draftToRemember.current }, [])
 
   const refresh = (): void => {
@@ -137,25 +147,16 @@ export function Home() {
   }, [projects, filter, query])
 
   // Asks the model for one fresh topic in a category and drops it straight into the idea box.
-  const makeIdea = async (category: string): Promise<void> => {
-    setIdeaBusy(true)
-    try {
-      const r = await window.api.story.idea(category, language)
-      setSynopsis(r.synopsis)
-      setTitle(r.title)
-      setBrief(undefined)
-      toast('success', `Ide baru: ${r.title}`)
-    } catch (e) {
-      toast('error', errorText(e))
-    } finally {
-      setIdeaBusy(false)
-    }
-  }
+  const makeIdea = async (category: string): Promise<void> => { setBrainstormCategory(category) }
 
   const start = async (): Promise<void> => {
     setCreating(true)
     try {
-      const b = await window.api.projects.create({ title, storyBrief: brief, synopsis, durationSec, language, aspectRatio, styleId, ttsProvider: tts })
+      let plan=matchingFormatPlan(formatPlan,contentFormat,synopsis)
+      if(durationMode==='auto'&&!plan)plan=await window.api.story.planContent(synopsis,contentFormat,language)
+      if(draft.current.synopsis!==synopsis||draft.current.title!==title||draft.current.language!==language||draft.current.contentFormat!==contentFormat||draft.current.durationMode!==durationMode||draft.current.durationSec!==durationSec||draft.current.aspectRatio!==aspectRatio||draft.current.styleId!==styleId||draft.current.tts!==tts)throw new Error('Ide atau format berubah saat kerangka disusun. Hasil belum diterapkan.')
+      if(plan)setFormatPlan(plan)
+      const b = await window.api.projects.create({ title, storyBrief: brief, synopsis, durationSec:durationMode==='auto'?plan!.estimatedSec:durationSec, contentFormat,durationMode,formatPlan:plan??undefined,language, aspectRatio, styleId, ttsProvider: tts })
       rememberDraft.current = false; homeDraft = null
       go({ name: 'project', id: b.project.id })
     } catch (e) {
@@ -176,8 +177,8 @@ export function Home() {
     setLinkNote(null)
     setLinkError(null)
     try {
-      const idea = await window.api.story.fromVideo(url, language, sourceInput)
-      if (draft.current.title !== title || draft.current.synopsis !== synopsis || draft.current.language !== language)
+      const idea = await window.api.story.fromVideo(url, language, {...sourceInput,format:contentFormat})
+      if (draft.current.title !== title || draft.current.synopsis !== synopsis || draft.current.language !== language || draft.current.contentFormat !== contentFormat)
         throw new Error('Ide atau bahasa berubah saat podcast dipelajari. Hasil belum diterapkan agar edit kamu tetap aman.')
       setShowSource(false)
       setSynopsis(idea.synopsis)
@@ -226,7 +227,7 @@ export function Home() {
     <div className="grid h-full grid-cols-[200px_minmax(0,1fr)] grid-rows-[68px_minmax(0,1fr)]">
       <aside className="row-span-2 flex flex-col gap-7 border-r border-line bg-surface px-4 py-5">
         <Logo />
-        <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => { setEntryMode('manual'); setTimeout(() => document.getElementById('ide')?.focus(), 0) }}>Cerita baru</Button>
+        <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => { setEntryMode('manual'); setTimeout(() => document.getElementById('ide')?.focus(), 0) }}>Konten baru</Button>
         <nav aria-label="Pustaka proyek" className="flex flex-col gap-1">
           <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-widest text-muted">Pustaka</p>
           {FILTERS.map((f) => (
@@ -274,14 +275,19 @@ export function Home() {
           <div>
             <h1 className="font-display text-[30px] font-semibold leading-tight tracking-[-0.025em]">Ruang produksi</h1>
             <p className="mt-3 text-[17px] text-ink-2">
-              Masukkan bahan, tinjau ide, lalu susun naskah. Visual dan suara disiapkan setelahnya.
+              Pilih Short atau Long, cari ide, lalu kembangkan pembahasannya.
             </p>
           </div>
+          <section aria-label="Mulai konten" className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-5">
+            <FormatChoice value={contentFormat} disabled={linkBusy||creating||ideaBusy} onChange={value=>{setContentFormat(value);setDurationMode('auto');setAspectRatio(value==='short'?'9:16':'16:9')}} />
+            <p className="text-xs text-muted">Durasi diperkirakan setelah kerangka jelas. Tidak perlu menentukan menit sekarang.</p>
+          </section>
           <div aria-label="Cara memulai proyek" className="flex flex-wrap gap-2">
+            <Button variant={entryMode==='brainstorm'?'accent':'secondary'} aria-pressed={entryMode==='brainstorm'} disabled={linkBusy||creating} onClick={()=>setEntryMode('brainstorm')}>Brainstorm ide</Button>
             <Button variant={entryMode === 'source' ? 'accent' : 'secondary'} aria-pressed={entryMode === 'source'} disabled={linkBusy} onClick={() => setEntryMode('source')}>Dari YouTube / transkrip</Button>
             <Button variant={entryMode === 'manual' ? 'accent' : 'secondary'} aria-pressed={entryMode === 'manual'} disabled={linkBusy} onClick={() => setEntryMode('manual')}>Tulis ide sendiri</Button>
           </div>
-          {entryMode === 'source' && brief && <div className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3 text-sm"><span>Materi sudah diolah. Tinjau ide dan durasi di bawah.</span><Button size="sm" onClick={() => setShowSource(!showSource)}>{showSource ? 'Tutup bahan sumber' : 'Ganti bahan sumber'}</Button></div>}
+          {entryMode === 'source' && brief && <div className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3 text-sm"><span>Materi sudah diolah. Tinjau ide dan kerangkanya di bawah.</span><Button size="sm" onClick={() => setShowSource(!showSource)}>{showSource ? 'Tutup bahan sumber' : 'Ganti bahan sumber'}</Button></div>}
           {entryMode === 'source' && (!brief || showSource) && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-dashed border-line-3 bg-sand/50 px-4 py-3">
             <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink">
@@ -312,6 +318,8 @@ export function Home() {
             {linkNote && <p className="w-full rounded-xl bg-accent-soft px-3 py-2 text-xs leading-relaxed text-accent-dark">{linkNote}</p>}
           </div>
           )}
+          {entryMode==='brainstorm'&&<section aria-label="Cari ide sesuai format" className="flex flex-wrap items-end gap-3 rounded-xl border border-line bg-surface p-5"><label className="flex min-w-0 flex-1 flex-col gap-2 text-sm font-semibold">Niche<Select label="Niche" value={niche} onChange={setNiche} options={IDEA_TOPICS.map(t=>({value:t.id,label:t.label,note:t.note}))} /></label><Button variant="primary" disabled={ideaBusy||creating||linkBusy} onClick={()=>void makeIdea(niche)}>Cari ide {contentFormat==='short'?'Short':'Long'}</Button></section>}
+          <Brainstorm category={brainstormCategory} language={language} format={contentFormat} onClose={()=>setBrainstormCategory(null)} onBusy={setIdeaBusy} onPick={idea=>{setTitle(idea.title);setSynopsis(idea.synopsis);setFormatPlan({format:contentFormat,synopsis:idea.synopsis,outline:idea.outline,estimatedSec:idea.estimatedSec});if(durationMode==='auto')setDurationSec(idea.estimatedSec);setBrief({idea:idea.angle,fictional:idea.fictional,reviewNotes:idea.checks,sourceOptions:{format:contentFormat,mode:idea.fictional?'fiction':'factual',audience:'Penonton pemula',angle:idea.angle,contribution:'Hook yang dipilih: '+idea.hook}});setBrainstormCategory(null)}} />
           {(entryMode === 'manual' || brief) && (
           <div className="flex flex-col gap-3 rounded-xl border border-line-2 bg-surface p-5">
             <label htmlFor="ide" className="text-[13px] font-semibold text-ink-2">
@@ -324,20 +332,16 @@ export function Home() {
               rows={3}
               value={synopsis}
               onChange={(e) => setSynopsis(e.target.value)}
-              placeholder="Contoh: Gajah Mada bersumpah tidak akan menikmati palapa sebelum Nusantara bersatu. Para menteri menertawakannya, tapi dia membuktikannya…"
+              placeholder="Misalnya: Kenapa gaji naik tetapi tabungan tidak bertambah? Jelaskan proses dan contoh yang ingin dibahas."
               className="resize-none bg-transparent text-lg leading-relaxed outline-none placeholder:text-muted/70"
             />
             <SourceReview brief={brief} />
-            <StoryPacing brief={brief} synopsis={synopsis} duration={durationSec} onDuration={setDurationSec} />
+            <FormatOutline plan={formatPlan} format={contentFormat} synopsis={synopsis} />
+            {brief?.pacing&&<details><summary className="cursor-pointer text-xs font-medium text-muted">Penilaian bahan sumber</summary><StoryPacing brief={brief} synopsis={synopsis} duration={durationSec} onDuration={sec=>{setDurationSec(sec);setDurationMode('manual')}} /></details>}
             <div className="flex flex-wrap items-center gap-2 border-t border-dashed border-line pt-3.5">
-              <Select
-                variant="pill"
-                label="Durasi"
-                value={durationSec}
-                onChange={setDurationSec}
-                options={(DURATIONS.some(d => d.sec === durationSec) ? DURATIONS : [...DURATIONS, { sec: durationSec, label: durationSec / 60 + ' menit' }].sort((a,b) => a.sec-b.sec)).map((d) => ({ value: d.sec, label: d.label }))}
-              />
-              <details className="w-full rounded-lg border border-line p-3" aria-label="Pengaturan awal proyek"><summary className="cursor-pointer text-sm">Format, gaya, bahasa, dan suara <span className="text-xs text-muted">· bisa diubah nanti</span></summary><div className="mt-3 flex flex-wrap gap-2">
+              <details className="w-full rounded-lg border border-line p-3" aria-label="Pengaturan awal proyek"><summary className="cursor-pointer text-sm">Pengaturan tambahan</summary><div className="mt-3 flex flex-wrap gap-2">
+              <label className="flex w-full items-center gap-2 text-sm"><input type="checkbox" aria-label="Batasi durasi sendiri" checked={durationMode==='manual'} onChange={e=>setDurationMode(e.target.checked?'manual':'auto')} /> Batasi durasi sendiri (opsional)</label>
+              {durationMode==='manual'&&<Select variant="pill" label="Batas durasi" value={durationSec} onChange={setDurationSec} options={(DURATIONS.some(d=>d.sec===durationSec)?DURATIONS:[...DURATIONS,{sec:durationSec,label:Math.round(durationSec/60*10)/10+' menit'}]).map(d=>({value:d.sec,label:d.label}))} />}
               <Select
                 variant="pill"
                 label="Bahasa"
@@ -352,34 +356,11 @@ export function Home() {
               </div></details>
               <div className="flex-1" />
               <Button variant="primary" size="lg" loading={creating} disabled={linkBusy || ideaBusy || !synopsis.trim()} onClick={() => void start()}>
-                Lanjut ke proyek
+                {creating ? 'Menyiapkan kerangka…' : 'Lanjut ke proyek'}
                 <ArrowRight className="size-[18px]" />
               </Button>
             </div>
           </div>
-          )}
-          {entryMode === 'manual' && (
-<details className="rounded-xl border border-line bg-surface p-4"><summary className="cursor-pointer text-sm font-medium">Belum punya ide? Pilih topik</summary><div className="mt-3">          <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
-            <span className="inline-flex items-center gap-1.5 font-medium text-ink">
-              <Sparkles className="size-3.5" />
-              Bikin ide:
-            </span>
-            {IDEA_TOPICS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                disabled={ideaBusy || linkBusy || creating}
-                title={t.note}
-                onClick={() => void makeIdea(t.id)}
-                className="h-9 rounded-full border border-dashed border-line-3 px-3.5 text-[13px] text-ink-2 hover:border-ink-2 hover:text-ink disabled:opacity-40"
-              >
-                {t.label}
-              </button>
-            ))}
-            {ideaBusy && <span className="text-sun-ink">Menyusun ide…</span>}
-          </div>
-
-</div></details>
           )}
 
         </div>
@@ -447,7 +428,7 @@ export function Home() {
             })}
           </div>
           {projects && projects.length === 0 && (
-            <p className="text-sm text-muted">Belum ada proyek. Mulai dari YouTube/transkrip atau tulis ide sendiri di atas.</p>
+            <p className="text-sm text-muted">Belum ada proyek. Cari ide, olah YouTube/transkrip, atau tulis ide sendiri di atas.</p>
           )}
         </section>
       </main>

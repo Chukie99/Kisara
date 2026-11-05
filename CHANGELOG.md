@@ -9,6 +9,10 @@ Cara menaikkan versi ada di [docs/pengembangan.md](docs/pengembangan.md#versi-da
 ## [Belum dirilis]
 
 ### Perubahan
+- Perbaikan alur mencoba maksimal dua putaran dan menyimpan tiap kelompok perbaikan agar percobaan berikutnya melanjutkan tulisan terbaru, bukan mengulang draf lama.
+- Pemeriksaan alur memakai instruksi editor terpisah dan mengulang sekali jika respons tidak cocok dengan format/nomor/kutipan; draf lengkap tetap tersimpan jika pemeriksaan gagal.
+- Naskah panjang menyimpan progres lokal per empat adegan; penyusunan dapat dilanjutkan setelah gagal atau restart. Draf lengkap dipertahankan bila pemeriksaan alur gagal; naskah lama tetap aman.
+- Dashboard memulai dari Short/Long dan niche; brainstorming menghasilkan kerangka serta perkiraan durasi. Batas menit menjadi opsional, dan naskah mengikuti format serta kerangka yang dipilih.
 - Pemeriksaan naskah lokal dan tinjauan AI opsional dengan kutipan adegan, laporan tersimpan dan invalidasi setelah edit.
 - Impor hasil Flow massal: pasangan nomor/manual, pencegahan duplikat, izin penggantian, riwayat aset, normalisasi MP4, validasi paket dan pembatalan.
 - Draf Home tetap ada selama sesi saat kembali dari Pengaturan; error ambil ide memiliki pintasan tes model.
@@ -134,3 +138,36 @@ Lihat [docs/masalah-diketahui.md](docs/masalah-diketahui.md). Yang paling terasa
 - Hasil WAV memakai jalur timeline/caption/ekspor yang sama. ID referensi berubah saat setting atau sampel diganti.
 - Pengaturan menjelaskan pengiriman sampel ke Space serta lisensi nonkomersial checkpoint F5 Indo bawaan.
 
+
+- Naskah lintas topik: pemeriksaan penghubung, konteks, batas klaim dan payoff sebelum penerapan, perbaikan terbatas serta pemeriksaan ulang.
+- Prompt visual mengikuti tujuan penjelasan; pembukaan edukasi tidak dipaksa menjadi adegan bahaya.
+- Kegagalan perbaikan naskah tampil persisten dan mempertahankan versi lama.
+
+- Pilihan ide Cerita kehidupan dan konflik sehari-hari (fiksi) serta Fakta unik dan pengetahuan mengejutkan (faktual), dengan arahan khusus dan mode yang diteruskan ke proyek baru.
+
+- Brainstorm enam sudut ide beserta hook dan daftar riset per niche, dengan Finance dan pemilihan kandidat sebelum mengubah draf.
+- Overlay teks pudar, membesar dan naik; angka berjalan naik/turun dengan posisi dan waktu sendiri, termasuk ekspor MP4.
+- Gerak kamera Dekati lalu tahan, Buka lalu tahan dan Lintasan melengkung.
+
+### Google Flow lokal — 29 Oktober 2026
+
+- Konektor Flow2API untuk gambar, lembar pemeran, dan image-to-video, dengan pemilihan model serta tombol hubungkan instalasi lokal.
+- Antrean serial dan pemasangan hasil ke adegan asal; perubahan adegan saat proses berlangsung tidak ditimpa hasil lama.
+- Patch backend mempertahankan akun sampai penolakan kuota eksplisit. Retry tidak digunakan untuk CAPTCHA, autentikasi, timeout, atau hasil yang tidak jelas.
+- Detail setup dan batas validasi: docs/google-flow-lokal.md.
+
+- Flow2API lokal otomatis dinyalakan tersembunyi saat membuka Kisara dengan Google Flow terpilih. Server aktif digunakan kembali; tombol hubungkan dan job Flow juga memeriksa kesiapan server. Endpoint manual lain tidak diluncurkan otomatis.
+
+- Draf lengkap yang tertahan saat pemeriksaan alur AI kini bisa dibuka secara eksplisit untuk ditinjau, termasuk setelah restart. Pemulihan tidak meminta AI lagi; ide/pengaturan harus cocok dan naskah diberi penanda pemeriksaan belum selesai. Pemeriksaan normal tetap berlaku pada Susun naskah.
+
+### Audit produksi dan kesiapan Flow
+
+- Panel Pasangkan akun dan worker di Kisara, pemeriksaan kesiapan sebelum batch, port awal worker 8765, dan error gambar permanen dengan pintasan pengaturan.
+- Status narasi lengkap beserta cancel; hasil audio lama ditolak setelah suara/naskah berubah pada semua provider.
+- Listener pembatalan FFmpeg/Whisper dibersihkan setelah proses selesai; batas waktu subprocess ditambahkan.
+- Detail hasil audit dan keterbatasan: docs/audit-produksi-2026-10-29.md.
+
+- Tombol Perbarui daftar worker menampilkan Memeriksa saat request berjalan, mencegah klik ganda, kembali aktif saat selesai/gagal, dan menampilkan waktu serta hasil pemeriksaan. Daftar kosong tidak lagi tampak seperti tombol tidak bereaksi.
+
+- Tambah akun Flow langsung dari Kisara: browser khusus per email dengan konektor gabungan dan pengisian konfigurasi otomatis, tanpa menyalin token. Login Google tetap manual; email sesi diperiksa sebelum sinkronisasi dan pairing. Detail persyaratan serta batas pengujian di docs/google-flow-lokal.md.
+- Worker manual membuka pengaturan melalui ikon toolbar, tidak menghubungkan WebSocket saat API key kosong, tidak mencetak URL berkunci ke log aplikasi, dan menyediakan bahasa Indonesia.

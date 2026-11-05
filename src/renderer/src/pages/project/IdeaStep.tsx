@@ -1,3 +1,4 @@
+import { FormatChoice, FormatOutline } from '../../components/ContentFormat'
 import { SourceEditor, SourceReview } from '../../components/SourceEditor'
 import { DEFAULT_SOURCE_OPTIONS } from '@shared/sourceOptions'
 import type { SourceOptions } from '@shared/types'
@@ -12,7 +13,7 @@ import { StylePicker } from '../../components/StylePicker'
 import { Button, Chip, Field, Segmented, confirmDialog, cx, inputCls } from '../../components/ui'
 import { errorText } from '../../lib/format'
 import { geminiPreview } from '../../lib/voicePreviews'
-import { TTS_NAMES, TTS_ORDER, ttsReadiness, usableTts } from '../../lib/keys'
+import { TTS_NAMES, TTS_ORDER, ttsReadiness } from '../../lib/keys'
 import { useApp } from '../../store/app'
 import { useProject } from '../../store/project'
 import { ModelSection } from './ModelSection'
@@ -181,13 +182,7 @@ export function IdeaStep() {
     void window.api.story.youtubeStatus().then(setYtdlp).catch(() => {})
   }, [])
 
-  // Before any narration exists, move to a narrator service that is ready to use.
-  const hasVoice = clips.some((c) => c.audioAssetId)
-  useEffect(() => {
-    if (!project || !keys.length || !ttsSettings || hasVoice || (project.ttsProvider === 'f5-local' && !f5Local)) return
-    const use = usableTts(project.ttsProvider, keys, supertonic, ttsSettings, f5Local)
-    if (use !== project.ttsProvider) updateProject({ ttsProvider: use, ttsVoice: defaultVoiceFor(use) })
-  }, [keys, supertonic, ttsSettings, f5Local, project?.id])
+  // Opening an existing project must preserve its narrator choice and saved-draft fingerprint.
 
   if (!project) return null
   const ready = ttsReadiness(keys, supertonic, ttsSettings, f5Local)
@@ -233,6 +228,19 @@ export function IdeaStep() {
     }
   }
 
+  const openSavedDraft = async (): Promise<void> => {
+    if (busy || !project) return
+    if (clips.length && !await confirmDialog({ title: 'Buka draf tersimpan?', body: 'Draf ini akan mengganti naskah yang terpasang. Gambar dan suara lama tetap ada di riwayat. Pemeriksaan alur AI belum selesai.', confirm: 'Buka draf' })) return
+    setBusy(true); ownRequest.current = true; setScriptError(null)
+    try {
+      await flush()
+      const bundle = await window.api.story.openScriptDraft(project.id)
+      if (useProject.getState().project?.id === project.id) load(bundle)
+      toast('success', 'Draf dibuka. Pemeriksaan AI belum selesai; tinjau naskahnya dulu.')
+    } catch (e) { setScriptError(errorText(e)) }
+    finally { ownRequest.current = false; setBusy(false) }
+  }
+
   /**
    * Reads a YouTube video and fills the idea box from it. The video's own words are only the raw material:
    * what lands in the box is a fresh synopsis the writer then reviews and edits like any other idea.
@@ -245,7 +253,7 @@ export function IdeaStep() {
     setLinkError(null)
     try {
       await flush()
-      const idea = await window.api.story.fromVideo(url, project.language, sourceInput)
+      const idea = await window.api.story.fromVideo(url, project.language, {...sourceInput,format:project.editor.contentFormat})
       const current = useProject.getState().project
       if (current?.id !== project.id) return
       if (current.synopsis !== project.synopsis || current.title !== project.title || current.language !== project.language) throw new Error('Ide atau bahasa berubah saat podcast dipelajari. Hasil belum diterapkan agar edit kamu tetap aman.')
@@ -278,7 +286,7 @@ export function IdeaStep() {
           <div className="flex flex-col gap-[22px]">
             <div>
               <p className="text-[13px] font-semibold text-accent">Langkah 1 dari 4</p>
-              <h1 className="mt-1.5 font-display text-[40px] font-bold leading-tight tracking-[-0.02em]">Tinjau ide & durasi</h1>
+              <h1 className="mt-1.5 font-display text-[40px] font-bold leading-tight tracking-[-0.02em]">Tinjau ide & kerangka</h1>
               <p className="mt-2 text-[15px] text-ink-2">
                 {sourceInput.mode === 'factual' ? 'Tentukan topik, target penonton, dan hal yang ingin kamu jelaskan. Tinjau fakta dan susunan pembahasannya sebelum menulis naskah.' : 'Sebut tokoh, tempat, dan akhir ceritanya. Makin jelas, makin rapi susunan klip dari AI.'}
               </p>
@@ -287,6 +295,7 @@ export function IdeaStep() {
             {(busy || scriptProgress || scriptError) && <section aria-label="Status penyusunan naskah" role={scriptError ? 'alert' : 'status'} className={cx('flex flex-col gap-3 rounded-xl border p-4', scriptError ? 'border-bad-ink bg-bad-soft' : 'border-line bg-surface')}>
               <div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold">{busy ? 'AI penulis sedang bekerja' : scriptError ? 'Naskah belum selesai' : scriptProgress?.status === 'canceled' ? 'Penyusunan dibatalkan' : 'Status naskah'}</h2>{busy && <span className="font-mono text-xs text-muted">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span>}</div>
               <p className="text-sm leading-relaxed">{scriptError ?? scriptProgress?.message ?? 'Menghubungi model penulis…'}</p>
+              {!busy && scriptError && scriptProgress?.draftAvailable && <div className="flex flex-col items-start gap-2"><Button onClick={() => void openSavedDraft()}>Buka draf untuk ditinjau</Button><p className="text-xs">Membuka hasil tersimpan tanpa meminta AI lagi. Pemeriksaan alur belum selesai.</p></div>}
               {busy && <><progress aria-label="Adegan selesai" value={scriptProgress?.completed ?? 0} max={scriptProgress?.total || clipCount} className="h-2 w-full accent-accent" /><p className="text-xs text-muted">{scriptProgress?.completed ?? 0} / {scriptProgress?.total || clipCount} adegan. Hugging Face dan Cloudflare tidak dipakai saat menyusun naskah.</p><Button size="sm" className="self-start" onClick={() => void window.api.story.cancelScript(project.id).catch((error) => setScriptError(errorText(error)))}>Batalkan penyusunan</Button></>}
             </section>}
 
@@ -357,18 +366,21 @@ export function IdeaStep() {
 
             <div className="flex flex-col gap-2">
               <SourceReview brief={project.editor.storyBrief} />
-              <StoryPacing brief={project.editor.storyBrief} synopsis={project.synopsis} duration={project.durationSec} onDuration={(durationSec) => updateProject({ durationSec })} />
-              <span className="text-sm font-semibold">Durasi video</span>
+              <StoryPacing brief={project.editor.storyBrief} synopsis={project.synopsis} duration={project.durationSec} onDuration={(durationSec) => {updateProject({ durationSec });updateEditor({durationMode:'manual'})}} />
+              <FormatChoice value={project.editor.contentFormat ?? (project.durationSec<=90?'short':'long')} disabled={busy||busyLink} onChange={contentFormat=>updateEditor({contentFormat,durationMode:'auto',formatPlan:undefined})} />
+              <FormatOutline plan={project.editor.formatPlan} format={project.editor.contentFormat ?? (project.durationSec<=90?'short':'long')} synopsis={project.synopsis} />
+              <p className="text-xs text-muted">Kerangka menentukan perkiraan durasi. Pilihan Short/Long diterapkan saat menyusun naskah; suara tidak dipercepat untuk mengejar target.</p>
+              <details><summary className="cursor-pointer text-sm font-medium">Batas durasi tambahan</summary><div className="mt-3 flex flex-col gap-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Batasi durasi proyek" checked={(project.editor.durationMode ?? 'manual')==='manual'} disabled={busy||busyLink} onChange={e=>updateEditor({durationMode:e.target.checked?'manual':'auto',contentFormat:project.editor.contentFormat ?? (project.durationSec<=90?'short':'long')})} /> Batasi durasi sendiri</label>{(project.editor.durationMode ?? 'manual')==='manual'&&<>              <span className="text-sm font-semibold">Batas durasi (opsional)</span>
               <div className="flex flex-wrap gap-2">
                 {(DURATIONS.some(d => d.sec === project.durationSec) ? DURATIONS : [...DURATIONS, { sec: project.durationSec, label: targetDuration }].sort((a,b) => a.sec-b.sec)).map((d) => (
-                  <Chip key={d.sec} on={project.durationSec === d.sec} onClick={() => updateProject({ durationSec: d.sec })} className="h-10 px-4">
+                  <Chip key={d.sec} on={project.durationSec === d.sec} disabled={busy||busyLink} onClick={() => {updateProject({ durationSec: d.sec });updateEditor({durationMode:'manual'})}} className="h-10 px-4">
                     {d.label}
                   </Chip>
                 ))}
               </div>
               <span className="text-[13px] text-muted">
                 Sekitar {clipCount} klip, masing-masing kurang lebih {perClip} detik. Durasi akhir mengikuti panjang suara narasi.
-              </span>
+              </span></>}</div></details>
             </div>
 
             <details className="rounded-xl border border-line bg-surface p-4" aria-label="Pengaturan lanjutan proyek"><summary className="cursor-pointer text-sm font-semibold">Pengaturan tambahan <span className="font-normal text-muted">· bahasa, format, suara, dan model</span></summary><div className="mt-4 flex flex-col gap-5">
@@ -447,7 +459,7 @@ export function IdeaStep() {
             {imageProvider && imageProvider !== 'higgsfield' && (
               <p className="rounded-xl border border-line-2 bg-surface px-3.5 py-2.5 text-[13px] leading-relaxed text-ink-2">
                 Gambar klip dibuat oleh{' '}
-                <strong className="text-ink">{imageProvider === 'cloudflare' ? 'Cloudflare Workers AI' : 'Space Hugging Face'}</strong> (gratis), memakai pengaturan di halaman
+                <strong className="text-ink">{imageProvider === 'flow2api' ? 'Google Flow (Flow2API)' : imageProvider === 'cloudflare' ? 'Cloudflare Workers AI' : 'Space Hugging Face'}</strong>, memakai pengaturan di halaman
                 Pengaturan. Pilihan model gambar Higgsfield di bawah tidak dipakai selama layanan itu aktif.
               </p>
             )}
@@ -479,7 +491,7 @@ export function IdeaStep() {
       <footer className="absolute inset-x-0 bottom-0 flex h-[84px] items-center gap-4 border-t border-line bg-surface px-14">
         <div className="flex flex-col gap-0.5">
           <span className="text-[15px] font-semibold">
-            {busy ? `${scriptProgress?.completed ?? 0} / ${scriptProgress?.total || clipCount} adegan · AI penulis` : `± ${clipCount} adegan · target ${targetDuration}`}
+            {busy ? `${scriptProgress?.completed ?? 0} / ${scriptProgress?.total || clipCount} adegan · AI penulis` : project.editor.durationMode==='auto' ? (project.editor.formatPlan?.synopsis===project.synopsis&&project.editor.formatPlan?.format===project.editor.contentFormat ? `Perkiraan ${targetDuration} · ${project.editor.contentFormat==='short'?'Short':'Long'}` : 'Kerangka & perkiraan disusun sebelum naskah') : `± ${clipCount} adegan · batas ${targetDuration}`}
           </span>
           <span className="flex items-center gap-1.5 text-[13px] text-muted">
             <Bot className="size-3.5" />

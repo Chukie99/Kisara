@@ -28,7 +28,10 @@ export const CAMERA_PRESETS: { id: CameraPresetId; label: string }[] = [
   { id: 'rotate', label: 'Putar pelan' },
   { id: 'handheld', label: 'Kamera genggam' },
   { id: 'shake', label: 'Goyang halus' },
-  { id: 'static', label: 'Diam' }
+  { id: 'static', label: 'Diam' },
+  { id: 'pushhold', label: 'Dekati lalu tahan' },
+  { id: 'pullhold', label: 'Buka lalu tahan' },
+  { id: 'drift', label: 'Lintasan melengkung' }
 ]
 
 export const MOTION_STRENGTHS: { id: MotionStrength; label: string; amount: number }[] = [
@@ -79,6 +82,12 @@ export function cameraAt(preset: CameraPresetId, strength: MotionStrength, p: nu
   const s = strengthAmount(strength)
   const e = smooth(p)
   switch (preset) {
+    case 'pushhold':
+      return { zoom: lerp(1, 1+s, smooth(p / 0.6)), x: 0, y: 0 }
+    case 'pullhold':
+      return { zoom: lerp(1+s, 1, smooth(p / 0.6)), x: 0, y: 0 }
+    case 'drift':
+      return { zoom: 1+s, x: lerp(-0.8,0.8,e), y: 0.35*Math.sin(Math.PI*Math.min(1,Math.max(0,p))) }
     case 'zoomin':
       return { zoom: lerp(1, 1 + s, e), x: 0, y: 0 }
     case 'zoomout':
@@ -151,6 +160,18 @@ export function cameraPerspective(preset: CameraPresetId, strength: MotionStreng
   let y = '0'
   let rot = ''
   switch (preset) {
+    case 'pushhold':
+    case 'pullhold': {
+      const q = `min(${p}/0.6,1)`
+      const hold = `(${q}*${q}*(3-2*${q}))`
+      z = preset === 'pushhold' ? `(1+${s}*${hold})` : `(${1+s}-${s}*${hold})`
+      break
+    }
+    case 'drift':
+      z = `${1+s}`
+      x = lin(-0.8,0.8)
+      y = `(0.35*sin(PI*${p}))`
+      break
     case 'zoomin':
       z = lin(1, 1 + s)
       break

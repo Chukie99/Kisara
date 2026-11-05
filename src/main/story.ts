@@ -1,3 +1,6 @@
+import { readScriptDraft, writeScriptDraft, clearScriptDraft, type ScriptDraft } from './scriptDrafts'
+import { planContent } from './contentPlan'
+import { formatDirection, matchingFormatPlan } from '@shared/contentFormat'
 import { CAMERA_PRESETS, MOTION_STRENGTHS, TRANSITIONS } from '@shared/motion'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -10,10 +13,11 @@ import { resolveCharacter } from '@shared/characters'
 import { getStyle } from '@shared/styles'
 import { composeSceneSpeech, type DialogueLine } from '@shared/speech'
 import type { CameraPresetId, Clip, MotionStrength, MusicPrompt, ProjectBundle, SoundCue, TransitionId, SourceOptions, VideoIdea } from '@shared/types'
-import { applyScriptRefinement, applyVisuals, charactersOf, clipsOf, getBundle, getProject, repairCharacterLinks, replaceScript, type SceneVisual } from './repo'
+import { patchEditor, applyScriptRefinement, applyVisuals, charactersOf, clipsOf, getBundle, getProject, repairCharacterLinks, replaceScript, type SceneVisual } from './repo'
 import { generateJson } from './services/llm'
 import { fetchInfo, fetchTranscript, normalizeYoutubeUrl } from './services/youtube'
 import { readVisualDraft, writeVisualDraft, clearVisualDraft } from './visualDrafts'
+import { COMPREHENSION_RULES, EXPLANATORY_VISUAL_RULES, improveComprehension } from './editorial'
 
 const CAMERA_IDS = CAMERA_PRESETS.map((c) => c.id)
 const STRENGTH_IDS = MOTION_STRENGTHS.map((m) => m.id)
@@ -103,29 +107,41 @@ function factualScriptSystem(language: string): string {
     'Explain technical finance terms in everyday language at first use while preserving their meaning. Use a concrete audience question or supported problem as the hook, then build definitions, mechanism, supported example, limitations and a practical summary. No forced plot twist, horror, invented protagonist or fake financial adviser persona. No personalized advice or guaranteed returns. Any hypothetical example must be called a simulation in the spoken narration; do not invent numbers missing from the approved brief.',
     'Each scene is one passage of the same explanation, not a separate episode. Preserve logical links across scene boundaries. Vary sentence length and leave breathing room. The story field describes an illustrative visual, not evidence that a real event happened. Charts, objects, everyday illustrations and diagrams are valid; characters are optional. Leave dialogue empty unless quoting an explicitly supplied, attributed statement accurately. Never stage a conversation as factual.',
     'Keep narration plain and performable; no vocal tags or stage directions. Never pad a longer target or remove essential caveats to meet a short target.',
-    HUMAN_VOICE
+    HUMAN_VOICE,
+    COMPREHENSION_RULES
   ].join(' ')
 }
 
-interface ScriptPlan {
+export interface ScriptPlan {
   title?: string
   scenes?: { sourceScene?: number; title?: string; story?: string; narration?: string; dialogue?: DialogueLine[] }[]
 }
 
 /** Writes the scene-by-scene script (story and voice-over) that the user reviews before any visuals exist. */
-export async function generateScript(projectId: string, options: { signal?: AbortSignal; progress?: (completed: number, total: number, message: string) => void } = {}): Promise<ProjectBundle> {
-  const project = getProject(projectId)
+export async function generateScript(projectId: string, options: { useSavedDraft?: boolean; signal?: AbortSignal; progress?: (completed: number, total: number, message: string) => void } = {}): Promise<ProjectBundle> {
+  const stored = getProject(projectId)
+  const project = {...stored,editor:{...stored.editor}}
   const originalClips = clipsOf(projectId)
   if (!project.synopsis.trim()) throw new Error('Tulis ide cerita atau sinopsis dulu.')
+  if(project.editor.contentFormat && project.editor.durationMode==='auto'){
+    options.signal?.throwIfAborted()
+    options.progress?.(0,clipCountFor(project.durationSec),'Menyusun kerangka sesuai '+(project.editor.contentFormat==='short'?'Short':'Long')+' dan memperkirakan durasinya…')
+    const matching = matchingFormatPlan(project.editor.formatPlan,project.editor.contentFormat,project.synopsis)
+    if (options.useSavedDraft && !matching) throw new Error('Kerangka atau ide berubah. Susun naskah lagi agar draf tidak dipasang pada ide yang berbeda.')
+    const plan=matching ?? await planContent(project.synopsis,project.editor.contentFormat,project.language,options.signal)
+    project.durationSec=plan.estimatedSec
+    project.editor.formatPlan=plan
+  }
   const lang = languageOf(project.language)
   const count = clipCountFor(project.durationSec)
   const ask = async <T>(request: { system: string; prompt: string; schema: object; name: string }): Promise<T> => {
     options.signal?.throwIfAborted()
+    if (options.useSavedDraft) throw new Error('Draf lengkap yang cocok belum tersedia. Susun naskah terlebih dahulu.')
     const timeout = AbortSignal.timeout(180000)
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
     try { return await generateJson<T>({ ...request, signal }) }
     catch (error) {
-      if (timeout.aborted && !options.signal?.aborted) throw new Error('AI penulis belum menjawab setelah 3 menit. Coba lagi atau pilih model penulis lain; layanan gambar tidak dipakai pada tahap ini.')
+      if (timeout.aborted && !options.signal?.aborted) throw new Error(request.name.startsWith('script-comprehension') ? 'Draf adegan sudah tersimpan, tetapi pemeriksaan atau perbaikan alur AI belum merespons dalam 3 menit. Kamu bisa membuka draf untuk ditinjau tanpa mengulang penulisan.' : 'AI penulis belum menjawab setelah 3 menit. Coba lagi atau pilih model penulis lain; layanan gambar tidak dipakai pada tahap ini.')
       throw error
     }
   }
@@ -151,6 +167,7 @@ export async function generateScript(projectId: string, options: { signal?: Abor
     'Give each scene a drawable situation in the story field. Its spoken narration may also convey a thought, doubt, memory or the significance of a detail; it need not describe the illustration literally.',
     HUMAN_VOICE,
     STORY_VOICE,
+    COMPREHENSION_RULES,
     ['supertonic', 'f5-hf', 'f5-local'].includes(project.ttsProvider)
       ? 'The narration uses a reference or local voice without native emotion tags. Convey the emotion through word choice, punctuation, short dialogue, and sentence rhythm. Never include angle-bracket or square-bracket tags or stage directions.'
       : 'The narration is voiced by an expressive text-to-speech model. Vary punctuation and sentence length to match the emotion; do not shout every line. Where it helps the delivery, add at most two English vocal tags before the affected words, such as <short pause>, <gasp>, <whispers>, <sad>, <excited> or <angry>. Never other markup.',
@@ -158,26 +175,33 @@ export async function generateScript(projectId: string, options: { signal?: Abor
   ].join(' ')
   const factual = project.editor?.storyBrief?.fictional === false
   const notesMatch = !project.editor?.storyBrief?.pacing || !!currentPacing(project.editor.storyBrief.pacing, project.synopsis, project.editor.storyBrief.idea)
-  const system = factual ? factualScriptSystem(lang) : fictionSystem
+  const system = (factual ? factualScriptSystem(lang) : fictionSystem) + ' ' + formatDirection(project.editor.contentFormat)
   const prompt = [
-    sourceDirection(project.editor?.storyBrief?.sourceOptions),
+    matchingFormatPlan(project.editor.formatPlan,project.editor.contentFormat,project.synopsis) ? 'Prioritize this format-specific connected outline: '+JSON.stringify(project.editor.formatPlan!.outline) : '',
+    sourceDirection(project.editor.storyBrief?.sourceOptions ? {...project.editor.storyBrief.sourceOptions,format:project.editor.contentFormat ?? project.editor.storyBrief.sourceOptions.format} : undefined),
     notesMatch && project.editor?.storyBrief?.sourceNotes?.length ? 'Source notes (not independently verified): ' + JSON.stringify(project.editor.storyBrief.sourceNotes) : '',
     project.editor?.storyBrief?.reviewNotes?.length ? 'Unresolved checks; never present them as verified: ' + JSON.stringify(project.editor.storyBrief.reviewNotes) : '',
     `Idea / synopsis:\n${project.synopsis}`,
     project.editor?.storyBrief ? `Approved ${factual ? 'factual editorial angle' : 'fictional premise'}: ${project.editor.storyBrief.idea}. Keep this coherent with the approved synopsis.` : '',
     (() => { const pacing = currentPacing(project.editor?.storyBrief?.pacing, project.synopsis, project.editor?.storyBrief?.idea ?? ''); return pacing ? (factual ? 'Preserve this reviewed explanation structure, including definitions, mechanism, conditions and limitations: ' : 'Preserve this reviewed causal arc in order, including reactions and the ending: ') + pacing.beats.map((b, i) => (i + 1) + '. ' + b.event).join(' | ') + (factual ? '. If the target is short, cut repetition and side topics before cutting definitions or essential caveats. Never invent a story to fill a longer target.' : '. If the chosen target is shorter than the assessed pacing, compress repetition, exposition and side detail first; retain motivations, cause and effect, essential dialogue and the payoff. Never rush by listing disconnected incidents. Do not add events just to fill a longer target.') : '' })(),
-    `Target maximum video length: about ${project.durationSec} seconds, told in up to ${count} scenes. Use fewer scenes when the source does not support that length; never pad the story.`,
+    project.editor.durationMode==='auto' ? `Planning estimate from the approved outline: about ${project.durationSec} seconds and up to ${count} visual scenes. Prioritize a complete connected explanation or causal story over hitting this estimate exactly. Use fewer scenes when supported; never pad or drop essential bridges to match the estimate.` : `Target maximum video length: about ${project.durationSec} seconds, told in up to ${count} scenes. Use fewer scenes when the source does not support that length; never pad the story.`,
     `Aim for about ${words} spoken words per scene ON AVERAGE across narration and dialogue. Vary passage length naturally, keep the total duration in mind, and cut repetition rather than forcing one equal-length sentence per picture.`
   ].join('\n\n')
 
   // Expand long stories in bounded parts; one giant JSON answer can silently truncate a ten-minute script.
+  const fingerprint = createHash('sha256').update(JSON.stringify(['script-draft-v1', system, prompt, stored.title, stored.durationSec, stored.editor.contentFormat, stored.editor.durationMode, stored.editor.formatPlan, originalClips.map(c => [c.id, c.title, c.story, c.narration])])).digest('hex')
+  let draft = readScriptDraft(projectId, fingerprint, count)
+  if (options.useSavedDraft && !draft?.complete) throw new Error('Draf lengkap tidak cocok dengan ide atau pengaturan terbaru. Kembalikan pengaturan sebelumnya atau susun naskah lagi.')
   let plan: ScriptPlan
-  if (count <= 32) {
+  if (draft?.complete) {
+    plan = { title: draft.title, scenes: draft.scenes }
+    options.progress?.(draft.scenes.length, count, 'Draf lengkap ditemukan di disk. Melanjutkan pemeriksaan alur sebelum menyimpan naskah…')
+  } else if (count <= 32) {
     options.progress?.(0, count, 'AI penulis sedang menyusun naskah. Belum ada permintaan gambar.')
     plan = await ask<ScriptPlan>({ system, prompt, schema: scriptSchema(words - 1, words + 2), name: 'script' })
   } else {
     options.progress?.(0, count, 'Mempelajari sinopsis dan menyusun kerangka cerita lengkap lewat AI penulis…')
-    const outline = await ask<{ title?: string; beats?: string[] }>({ system,
+    const outline = draft ? {title:draft.title,beats:draft.beats} : await ask<{ title?: string; beats?: string[] }>({ system,
       prompt: factual ? `${prompt}\nOutline this COMPLETE factual explanation in 8–12 sections: audience question, definitions, mechanism, supported examples, relevant conditions, limitations and conclusion. Each beat is a concise explanation section, not an invented character event. Keep the factual distinctions and original names; do not add plot twists, dialogue or a protagonist. These sections will be expanded into about ${count} visual scenes. Return title and beats.` : `${prompt}\n${factual ? 'For this factual explainer, outline definitions, mechanism, supported example, limitations and takeaway. Do not use fictional plot or invented events. Ignore story-specific plot terms below: each beat is an explanation section.' : ''} First outline this COMPLETE story in 8–12 major story beats, including the actual ending. These are broad plot beats, NOT one entry per image. They will be expanded into about ${count} visual scenes later. Each beat is one short sentence stating a cause, a change in the character's understanding or emotion, and any important clue/payoff when relevant; not full narration. Plan genre-appropriate variation in emotional intensity, not a flat sequence or uninterrupted escalation. Keep all names from the approved synopsis.`,
       schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string' }, beats: { type: 'array', items: { type: 'string' } } }, required: ['title', 'beats'] }, name: 'script-outline' })
     const sourceBeats = outline.beats
@@ -185,11 +209,14 @@ export async function generateScript(projectId: string, options: { signal?: Abor
       throw new Error('Kerangka cerita panjang belum lengkap. Naskah lama dipertahankan; coba susun lagi.')
     // Fold an over-detailed outline without dropping its ending or any intermediate event.
     const beats = sourceBeats.length <= count ? sourceBeats : Array.from({ length: count }, (_, i) => sourceBeats.slice(Math.floor(i * sourceBeats.length / count), Math.floor((i + 1) * sourceBeats.length / count)).join(' '))
-    plan = { title: str(outline.title), scenes: [] }
+    draft ??= { fingerprint, title: str(outline.title), beats, scenes: [], complete: false }
+    writeScriptDraft(projectId, draft)
+    plan = { title: draft.title, scenes: [...draft.scenes] }
+    if (draft.scenes.length) options.progress?.(draft.scenes.length, count, 'Melanjutkan '+draft.scenes.length+'/'+count+' adegan yang tersimpan di disk…')
     // An outline is not a shot list: a valid 23-beat outline can still become an 86-scene ten-minute script.
     const slots = Array.from({ length: count }, (_, i) => ({ id: i + 1, beat: Math.min(beats.length - 1, Math.floor(i * beats.length / count)) }))
-    for (let at = 0; at < slots.length; at += 8) {
-      const group = slots.slice(at, at + 8)
+    for (let at = plan.scenes!.length; at < slots.length; at += 4) {
+      const group = slots.slice(at, at + 4)
       const found = new Map<number, NonNullable<ScriptPlan['scenes']>[number]>()
       const expand = async (requested: typeof slots, repair = false): Promise<void> => {
         options.progress?.(at, count, `${repair ? 'Melengkapi' : 'Menulis'} adegan ${requested[0].id}–${requested.at(-1)!.id} dari ${count}. Kerangka ${beats.length} bagian sudah siap.`)
@@ -212,19 +239,27 @@ export async function generateScript(projectId: string, options: { signal?: Abor
       for (let i = 0; i < missing.length; i += 4) await expand(missing.slice(i, i + 4), true)
       if (group.some((slot) => !found.has(slot.id))) throw new Error(`Adegan ${group.filter((slot) => !found.has(slot.id)).map((slot) => slot.id).join(', ')} belum lengkap meski sudah dicoba ulang. Naskah lama tetap aman. Coba model penulis lain atau susun lagi.`)
       plan.scenes!.push(...group.map((slot) => found.get(slot.id)!))
-      options.progress?.(plan.scenes!.length, count, `${plan.scenes!.length} dari ${count} adegan selesai.`)
+      draft.scenes = [...plan.scenes!]
+      writeScriptDraft(projectId, draft)
+      options.progress?.(plan.scenes!.length, count, `${plan.scenes!.length} dari ${count} adegan tersimpan sementara di disk.`)
     }
   }
-  const scenes = (plan.scenes ?? []).filter((c) => str(c.narration) || (c.dialogue?.length ?? 0) > 0)
+  let scenes = (plan.scenes ?? []).filter((c) => str(c.narration) || (c.dialogue?.length ?? 0) > 0)
   if (!scenes.length) throw new Error('Model tidak menghasilkan adegan. Coba lagi atau pilih model lain di Pengaturan.')
-  if (project.editor?.storyBrief?.fictional && /[“"]|\b(?:berbisik|berkata|menjawab|bertanya|dialog|percakapan|asked|replied|said)\b/i.test(project.synopsis) && !scenes.some((scene) => (scene.dialogue?.length ?? 0) > 0 || /[“"][^”"]+[”"]/.test(str(scene.narration))))
+  const completeDraft: ScriptDraft = { fingerprint, title: plan.title, beats: draft?.beats ?? [], scenes, complete: true }
+  writeScriptDraft(projectId, completeDraft)
+  if (!options.useSavedDraft) scenes = await improveComprehension(scenes, prompt, system, ask, message => options.progress?.(scenes.length, count, message), repaired => {
+    options.signal?.throwIfAborted()
+    writeScriptDraft(projectId, { ...completeDraft, scenes: repaired })
+  })
+  if (!options.useSavedDraft && project.editor?.storyBrief?.fictional && /[“"]|\b(?:berbisik|berkata|menjawab|bertanya|dialog|percakapan|asked|replied|said)\b/i.test(project.synopsis) && !scenes.some((scene) => (scene.dialogue?.length ?? 0) > 0 || /[“"][^”"]+[”"]/.test(str(scene.narration))))
     throw new Error('Model melewatkan percakapan sumber. Coba susun naskah lagi; dialog harus ikut ditulis dan disuarakan.')
 
   options.signal?.throwIfAborted()
-  options.progress?.(scenes.length, count, 'Memeriksa kesinambungan dan menyimpan naskah…')
+  options.progress?.(scenes.length, count, options.useSavedDraft ? 'Membuka draf tersimpan untuk kamu tinjau; pemeriksaan AI belum selesai…' : 'Pemeriksaan alur selesai; menyimpan naskah untuk kamu tinjau…')
   const current = getProject(projectId)
   const currentClips = clipsOf(projectId)
-  if (current.synopsis !== project.synopsis || current.durationSec !== project.durationSec || current.language !== project.language || current.ttsProvider !== project.ttsProvider || JSON.stringify(current.editor?.storyBrief) !== JSON.stringify(project.editor?.storyBrief) || currentClips.length !== originalClips.length || currentClips.some((c, i) => c.id !== originalClips[i].id || c.narration !== originalClips[i].narration || c.story !== originalClips[i].story))
+  if (current.editor.contentFormat !== stored.editor.contentFormat || current.editor.durationMode !== stored.editor.durationMode || JSON.stringify(current.editor.formatPlan)!==JSON.stringify(stored.editor.formatPlan) || current.title !== project.title || current.synopsis !== project.synopsis || current.durationSec !== stored.durationSec || current.language !== project.language || current.ttsProvider !== project.ttsProvider || JSON.stringify(current.editor?.storyBrief) !== JSON.stringify(project.editor?.storyBrief) || currentClips.length !== originalClips.length || currentClips.some((c, i) => c.id !== originalClips[i].id || c.title !== originalClips[i].title || c.narration !== originalClips[i].narration || c.story !== originalClips[i].story))
     throw new Error('Ide atau naskah berubah saat AI bekerja. Hasil belum diterapkan agar edit kamu tetap aman.')
 
   replaceScript(
@@ -235,8 +270,11 @@ export async function generateScript(projectId: string, options: { signal?: Abor
       story: str(c.story),
       narration: composeSceneSpeech(str(c.narration), Array.isArray(c.dialogue) ? c.dialogue : [], project.ttsProvider !== 'supertonic' && project.ttsProvider !== 'f5-hf' && project.ttsProvider !== 'f5-local'),
       durationMs: estimateNarrationMs(composeSceneSpeech(str(c.narration), Array.isArray(c.dialogue) ? c.dialogue : [], project.ttsProvider !== 'supertonic' && project.ttsProvider !== 'f5-hf' && project.ttsProvider !== 'f5-local'), TTS_WORDS_PER_SECOND[project.ttsProvider])
-    }))
+    })),
+    project.editor.contentFormat && project.editor.durationMode==='auto' ? {durationSec:project.durationSec,formatPlan:project.editor.formatPlan!} : undefined
   )
+  if (options.useSavedDraft || stored.editor.scriptReviewPending) patchEditor(projectId, { scriptReviewPending: options.useSavedDraft ? 'Draf dipulihkan dari penyimpanan. Pemeriksaan alur AI belum selesai; baca hubungan antaradegan, contoh, dan kesimpulan sebelum membuat visual atau suara.' : undefined })
+  clearScriptDraft(projectId)
   return getBundle(projectId)
 }
 
@@ -249,23 +287,26 @@ export async function refineScript(projectId: string): Promise<ProjectBundle> {
   const expectsDialogue = /[“"]|\b(?:berbisik|berkata|menjawab|bertanya|dialog|percakapan|asked|replied|said)\b/i.test(`${project.synopsis} ${before.clips.map((c) => `${c.story} ${c.narration}`).join(' ')}`)
   const request = {
     system: `You edit a continuous narrated story for genre-appropriate emotion, pacing and performable dialogue. Write in ${languageOf(project.language)}. ${project.editor?.storyBrief?.fictional ? 'This is approved original fiction. Preserve its names, plot, supernatural rules, character motivations and resolution; develop fresh phrasing and natural exchanges within those events, without importing podcast source names or presenting fiction as fact.' : 'Keep the source names, factual events and resolution. Do not invent events, evidence, supernatural claims or quotations by real people.'} Open on the unusual action or concrete conflict. Drop repetitive or filler scenes, especially repeated peaceful endings; retain at most one short closing beat. Each returned scene must include its ORIGINAL sourceScene number, in source order, so its existing asset can stay associated with it. Where the source describes someone asking, answering, calling for help or reassuring another person, adapt that meaning into short original character speech in the dialogue array. ${expectsDialogue ? 'At least one supported exchange must be spoken as dialogue; do not merely report that a conversation happened.' : 'Do not force a conversation into material that has none; an empty dialogue array is valid.'} Keep narrator text separate from dialogue. One narrator performs all lines. ${HUMAN_VOICE} ${STORY_VOICE} Convey delivery through words, sentence rhythm and normal punctuation; do not add vocal tags, stage directions or written sound-effect cues.`,
-    prompt: `Source synopsis:\n${project.synopsis}\n\nExisting ${before.clips.length} scenes:\n${before.clips.map((c, i) => `${i + 1}. ${c.title}\n${c.story}\n${c.narration}`).join('\n\n')}\nCombined narration and dialogue: about ${words} words per scene maximum. Return a shorter sequence when the ending or other scenes are redundant; do not pad to the original length.`,
+    prompt: `Source synopsis:\n${project.synopsis}\n\nExisting ${before.clips.length} scenes:\n${before.clips.map((c, i) => `${i + 1}. ${c.title}\n${c.story}\n${c.narration}`).join('\n\n')}\nCombined narration and dialogue: about ${words} words per scene ON AVERAGE; keep complete thoughts together. Return a shorter sequence when the ending or other scenes are redundant; do not pad to the original length.`,
     schema: scriptSchema(3, words + 2, true), name: 'refine-script'
   }
   if (project.editor?.storyBrief?.fictional === false) request.system = factualScriptSystem(languageOf(project.language)) + ' Edit the supplied narration for clarity and natural delivery, without invented dialogue; an empty dialogue array is valid. Keep the original sourceScene IDs in order. Preserve amounts, conditions, distinctions and uncertainty; drop repetition, never substantive caveats. Do not add vocal tags.'
+  request.system += ' ' + COMPREHENSION_RULES + ' ' + formatDirection(project.editor.contentFormat)
+  request.prompt += '\nCreator direction: ' + sourceDirection(project.editor.storyBrief?.sourceOptions ? {...project.editor.storyBrief.sourceOptions,format:project.editor.contentFormat ?? project.editor.storyBrief.sourceOptions.format} : undefined) + '\nSource notes (unverified): ' + JSON.stringify(project.editor?.storyBrief?.sourceNotes ?? []) + '\nUnresolved checks: ' + JSON.stringify(project.editor?.storyBrief?.reviewNotes ?? [])
   const plan = await generateJson<ScriptPlan>(request)
   if (!Array.isArray(plan.scenes) || !plan.scenes.length || plan.scenes.length > before.clips.length || plan.scenes.some((scene, i, all) => !Number.isInteger(scene.sourceScene) || scene.sourceScene! < 1 || scene.sourceScene! > before.clips.length || (i > 0 && scene.sourceScene! <= all[i - 1].sourceScene!)))
     throw new Error('Jumlah atau urutan adegan hasil perbaikan tidak cocok. Naskah lama tetap dipertahankan; coba lagi.')
+  plan.scenes = await improveComprehension(plan.scenes, request.prompt, request.system, req => generateJson({ ...req, signal: AbortSignal.timeout(180000) }), () => {})
   const updates = plan.scenes.map((scene) => {
     const original = before.clips[scene.sourceScene! - 1]
     return { id: original.id, title: str(scene.title) || original.title, story: str(scene.story), narration: composeSceneSpeech(str(scene.narration), Array.isArray(scene.dialogue) ? scene.dialogue : [], project.ttsProvider !== 'supertonic' && project.ttsProvider !== 'f5-hf' && project.ttsProvider !== 'f5-local') }
   })
   if (updates.some((scene) => !scene.story || !scene.narration))
     throw new Error('Model belum menghasilkan alur dan narasi lengkap. Naskah lama tetap dipertahankan; coba lagi.')
-  if (expectsDialogue && !updates.some((scene) => /[“"][^”"]+[”"]/.test(scene.narration)))
+  if (project.editor?.storyBrief?.fictional !== false && expectsDialogue && !updates.some((scene) => /[“"][^”"]+[”"]/.test(scene.narration)))
     throw new Error('Model belum menghasilkan dialog yang bisa dibacakan. Naskah lama tetap dipertahankan; coba lagi dengan sumber percakapan yang lebih jelas.')
   const latest = getBundle(projectId)
-  if (latest.project.synopsis !== project.synopsis || latest.project.language !== project.language || latest.project.ttsProvider !== project.ttsProvider || JSON.stringify(latest.project.editor?.storyBrief) !== JSON.stringify(project.editor?.storyBrief) || latest.clips.length !== before.clips.length || latest.clips.some((c, i) => c.id !== before.clips[i].id || c.narration !== before.clips[i].narration || c.story !== before.clips[i].story))
+  if (latest.project.durationSec !== project.durationSec || latest.project.synopsis !== project.synopsis || latest.project.language !== project.language || latest.project.ttsProvider !== project.ttsProvider || JSON.stringify(latest.project.editor?.storyBrief) !== JSON.stringify(project.editor?.storyBrief) || latest.clips.length !== before.clips.length || latest.clips.some((c, i) => c.id !== before.clips[i].id || c.title !== before.clips[i].title || c.narration !== before.clips[i].narration || c.story !== before.clips[i].story))
     throw new Error('Naskah berubah saat AI bekerja. Perbaikan tidak diterapkan agar edit kamu tetap aman.')
   applyScriptRefinement(projectId, updates)
   return getBundle(projectId)
@@ -451,17 +492,18 @@ export async function generateVisuals(projectId: string, mode: 'missing' | 'all'
     'The motion field must describe a visible subject action or physical environmental change that matches this specific scene, with a clear beginning and a stable end pose. Camera movement is optional and secondary; never give camera-only zoom/pan as the entire motion. Preserve the first-frame identities, wardrobe, location and art style. One short continuous shot, no montage, new events, new props, talking lips, dialogue or narration. Animate objects/weather if no person is present; avoid generic wind or blinking as a substitute for the scene action.',
     'Rules for the image descriptions, which go to a text-to-image model that never sees the script:',
     'Continuity is mandatory: use the exact canonical character names from the character list, including in scenes.characters and wardrobe. Keep ages, face, hairstyle and body unchanged throughout. If a person is young in a flashback, explicitly say so; never randomly change an adult into a child. Every named person visible in Action must occur in scenes.characters.',
-    'Use one decisive visible moment per image. Framing must contain only a shot size, angle and composition, never camera animation, alternative options, reasoning, "maybe" or "let us". The first scene must show the unusual event or the person in danger, not just an empty wall or establishing landscape.',
+    'Use one decisive visible moment per image. Framing must contain only a shot size, angle and composition, never camera animation, alternative options, reasoning, "maybe" or "let us". The first scene must show the concrete problem, comparison or story disturbance from the opening narration, not an unrelated establishing landscape. Do not invent danger in educational material.',
     'Keep climate and location literal. In a tropical Indonesian story, eerie cold is shown by a shiver, tense posture, misty humid air or cold lighting; never add snow, frost, icicles or frozen roofs unless the source explicitly says they exist. Supernatural dread does not change the local climate.',
     'For horror, keep restrained unsettling expressions, grounded anatomy and low-key lighting. No cute chibi characters, playful smiles or glamorous pinups unless the script explicitly calls for them. Never generate dialogue balloons, writing, lettering, sound-effect words, signs or readable book text; keep pages angled away or their marks indistinct.',
     '1. Every scene is self-contained. Always name the world (planet or country, era, technology) in the setting, even when the story makes it obvious, and add background details that prove it. Without this the model falls back to present-day Earth.',
-    '2. Turn narration into a literal, showable moment. When the narration is a general statement ("after generations, children grow taller"), invent one concrete situation that shows it with visible evidence (a height chart, a comparison with an adult, an old photo), never a symbol or a vague mood.',
+    '2. Turn narration into a showable moment or explanatory comparison grounded in this scene. A factual illustration is not documentary evidence; do not invent measured growth, data, historical photos or charts to prove a general claim. Show relationships using consistent objects, without adding unsupported facts.',
     '3. Describe people plainly as humans. Do not use words an image model may read literally or as fantasy, such as Martian, alien, native, creature, mutant, hybrid or "-born", unless they really are not human; describe the difference concretely instead ("a human teenager, about 2.1 m tall, very slender, long limbs, normal human face").',
     '4. Match the people and the place to the story, because the image model otherwise draws a default American or European scene. An Indonesian story shows Indonesian people: Southeast Asian faces, light-brown to brown skin, straight or softly wavy black hair, Indonesian clothing, houses, streets, food stalls and objects, named by city or region. Write that into the setting AND into each character\'s identity, so the look is fixed and not left to chance. Do the same for any other country or era the story is set in.',
     '5. Clothing must suit the place and action: no spacesuits or helmets inside a pressurized room, a spacesuit outside on an airless surface, period clothing for history. A recurring character keeps their default outfit (source "reference") unless the scene needs something else; then use "custom" and describe the new outfit in full. Describe the clothing of every extra too.',
     '6. Keep every recurring character visually consistent: reuse the existing characters exactly as given (same name, identity and outfit) and only add characters that are missing. Characters are only people who appear in several scenes; one-off people are extras described inside the scene.',
     '7. No readable text, signs, captions or labels in the image. Vary shot sizes, angles and camera moves across scenes so the video never feels repetitive.',
-    'Write "world", "identity", "outfit", "setting", "action", "wardrobe", "framing", "avoid" and "motion" in English.'
+    'Write "world", "identity", "outfit", "setting", "action", "wardrobe", "framing", "avoid" and "motion" in English.',
+    EXPLANATORY_VISUAL_RULES
   ].join('\n')
   const spans = sceneSpans(clips)
   const script = clips
@@ -479,7 +521,7 @@ export async function generateVisuals(projectId: string, mode: 'missing' | 'all'
   ].join('\n\n')
 
   // Persist validated groups without applying an incomplete plan to SQLite. Edits invalidate reuse.
-  const fingerprint = createHash('sha256').update(JSON.stringify(['visual-draft-v1', mode, project.synopsis, project.language, project.styleId, project.aspectRatio, known.map((c) => [c.id, c.name, c.description]), clips.map((c) => [c.id, c.title, c.story, c.narration, c.visualPrompt])])).digest('hex')
+  const fingerprint = createHash('sha256').update(JSON.stringify(['visual-draft-v2', mode, project.synopsis, project.language, project.styleId, project.aspectRatio, known.map((c) => [c.id, c.name, c.description]), clips.map((c) => [c.id, c.title, c.story, c.narration, c.visualPrompt])])).digest('hex')
   let draft = readVisualDraft(projectId, fingerprint) ?? { fingerprint, plan: { scenes: [], characters: [] } as VisualPlan, groupSize: 6 }
   if (draft.plan.scenes!.some((a) => !targets.some((t) => t.n === a.scene))) draft = { fingerprint, plan: { scenes: [], characters: [] }, groupSize: 6 }
   const plan = draft.plan
@@ -722,18 +764,21 @@ const IDEA_SCHEMA = {
 /** Proposes one fresh topic for a category, so the idea box is never a blank page. */
 export async function generateIdea(category: string, language: string): Promise<{ title: string; synopsis: string }> {
   const lang = languageOf(language)
-  const topic = IDEA_TOPICS.find((t) => t.id === category)?.label ?? category
+  const chosen = IDEA_TOPICS.find((t) => t.id === category)
+  const topic = chosen?.label ?? category
   const system = [
     'You are a YouTube strategist for faceless storytelling and explainer channels.',
     'You propose one specific, clickable topic that people actually search for and watch to the end.',
-    'Prefer concrete events, named people, real numbers and dates over vague themes.',
-    'Never invent facts: when something is a legend or unproven, say so in the synopsis.',
+    chosen?.fictional ? 'Develop an original fictional everyday-life conflict with concrete people, understandable motives, connected choices and consequences.' : 'Prefer concrete, well-established phenomena and events over vague themes; do not invent numbers, citations or research.',
+    chosen?.fictional ? 'Explicitly identify the synopsis as fiction; do not present invented people or events as a true account.' : 'Never invent facts: when something is a legend or unproven, say so in the synopsis.',
     'Open the synopsis with the detail that makes someone stop scrolling, not with a general statement about the theme.',
     HUMAN_VOICE,
     `Write everything in ${lang}.`
   ].join(' ')
   const prompt = [
     `Category: ${topic}`,
+    chosen?.direction ?? '',
+    COMPREHENSION_RULES,
     'Propose ONE topic for a short faceless video.',
     'The synopsis is pasted straight into the idea field, so describe the video itself, not a title and not a list of points.'
   ].join('\n\n')
@@ -876,7 +921,7 @@ export async function ideaFromVideo(url: string, language: string, input?: Sourc
     'For finance: explain each necessary technical term in plain everyday language at first use, preserve its meaning and explain the mechanism before the conclusion. Keep material limitations and risks. Never turn educational explanation into personalized investment advice, promised returns or a fake expert persona. Label any new illustrative example explicitly as a hypothetical simulation, not a real event or testimonial.',
     'Write a one-sentence editorial idea and a complete six-to-ten-sentence synopsis of the explanation: concrete audience question, definitions, mechanism, clearly labeled example if useful, limitations and supported takeaway. No invented protagonist, renamed real company, horror, staged dialogue, suspense reveal or plot twist. A new angle must be supported by the material; if it is unsupported say so in reviewNotes rather than fabricate an answer.',
     'Return sourceNotes (1–12 concise source-grounded claims/context to retain when writing) and reviewNotes (1–8 specific checks such as data dates, primary sources needed, uncertain claims or limitations of this transcript). Write in the requested language. Return renamedCharacters as an empty array.',
-    HUMAN_VOICE, 'Write everything in ' + lang + '.'
+    HUMAN_VOICE, COMPREHENSION_RULES, 'Write everything in ' + lang + '.'
   ].join(' ')
   const prompt = [
     sourceDirection(editorial),

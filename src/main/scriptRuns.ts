@@ -1,3 +1,4 @@
+import { savedScriptDraftCount } from './scriptDrafts'
 import { clipCountFor } from '@shared/models'
 import type { ProjectBundle, ScriptProgress } from '@shared/types'
 import { emit } from './events'
@@ -8,7 +9,10 @@ const runs = new Map<string, { state: ScriptProgress; controller: AbortControlle
 
 export function scriptStatus(projectId: string): ScriptProgress | null {
   getProject(projectId)
-  return runs.get(projectId)?.state ?? null
+  const current = runs.get(projectId)?.state
+  if (current) return current
+  const count = savedScriptDraftCount(projectId)
+  return count ? { draftAvailable: true, projectId, status: 'failed', completed: count, total: count, message: 'Draf lengkap tersimpan, tetapi pemeriksaan alur AI belum selesai. Kamu bisa melanjutkan pemeriksaan atau membuka draf untuk ditinjau sendiri.' } : null
 }
 
 export function cancelScript(projectId: string): void {
@@ -18,7 +22,7 @@ export function cancelScript(projectId: string): void {
 }
 
 /** Share one in-flight request per project, and retain its outcome after a renderer remount. */
-export function runScript(projectId: string): Promise<ProjectBundle> {
+export function runScript(projectId: string, useSavedDraft = false): Promise<ProjectBundle> {
   const active = runs.get(projectId)
   if (active?.state.status === 'running') return active.promise
   const project = getProject(projectId)
@@ -32,16 +36,18 @@ export function runScript(projectId: string): Promise<ProjectBundle> {
   runs.set(projectId, run)
   publish({})
   run.promise = Promise.resolve().then(() => generateScript(projectId, {
+    useSavedDraft,
     signal: controller.signal,
     progress: (completed, total, message) => publish({ completed, total, message })
   })).then((bundle) => {
-    publish({ status: 'done', completed: bundle.clips.length, total: bundle.clips.length, message: `${bundle.clips.length} adegan tersimpan. Naskah siap ditinjau.` })
+    publish({ status: 'done', completed: bundle.clips.length, total: bundle.clips.length, message: useSavedDraft ? `${bundle.clips.length} adegan dipulihkan untuk ditinjau. Pemeriksaan AI belum selesai.` : `${bundle.clips.length} adegan tersimpan. Naskah siap ditinjau.` })
     return bundle
   }).catch((error: unknown) => {
     const canceled = controller.signal.aborted
     const detail = error instanceof Error ? error.message : 'AI penulis tidak memberikan hasil yang bisa dipakai.'
-    const message = canceled ? 'Penyusunan dibatalkan. Naskah lama tetap aman.' : `Naskah belum tersimpan (${run.state.completed}/${run.state.total} adegan). ${detail}`
-    publish({ status: canceled ? 'canceled' : 'failed', message })
+    const continuation = detail.includes('Susun naskah') ? '' : ' Klik Susun naskah lagi untuk melanjutkan progres tersimpan jika ide dan pengaturan belum berubah.'
+    const message = canceled ? 'Penyusunan dibatalkan. Naskah lama tetap aman.' : `Naskah belum diterapkan (${run.state.completed}/${run.state.total} adegan). ${detail}${continuation}`
+    publish({ status: canceled ? 'canceled' : 'failed', message, draftAvailable: savedScriptDraftCount(projectId) > 0 })
     throw new Error(message)
   })
   return run.promise

@@ -8,7 +8,7 @@ import { cx } from './ui'
 const FILES = import.meta.glob('../assets/providers/*.{svg,png}', { eager: true, import: 'default' }) as Record<string, string>
 const file = (name: string): string => FILES[`../assets/providers/${name}`]
 
-export type ProviderLogoId = 'gemini' | 'openrouter' | 'groq' | 'elevenlabs' | 'higgsfield' | 'custom' | 'supertonic' | 'cloudflare' | 'huggingface'
+export type ProviderLogoId = 'gemini' | 'openrouter' | 'groq' | 'elevenlabs' | 'higgsfield' | 'custom' | 'supertonic' | 'cloudflare' | 'huggingface' | 'flow2api'
 
 const LOOK: Record<ProviderLogoId, { bg: string; src?: string; inset: number }> = {
   gemini: { bg: '#FFFFFF', src: 'gemini.svg', inset: 0.2 },
@@ -19,6 +19,7 @@ const LOOK: Record<ProviderLogoId, { bg: string; src?: string; inset: number }> 
   custom: { bg: '#F3EFE8', inset: 0.24 },
   supertonic: { bg: '#EDE7DA', inset: 0.24 },
   cloudflare: { bg: '#F6821F', inset: 0.22 },
+  flow2api: { bg: '#FFFFFF', src: 'gemini.svg', inset: 0.2 },
   huggingface: { bg: '#FFD21E', inset: 0.24 }
 }
 
