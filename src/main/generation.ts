@@ -1,3 +1,5 @@
+import { FlowImageBatch, type BatchImageRequest } from './flowImageBatch'
+import { flowVideoPrompt } from '@shared/flow'
 import { normalizeFlowVideo } from './services/generatedVideo'
 import { channelCharacterBytes, channelCharacterKey, channelCharacterPrompt, channelStyleBytes, channelStyleKey, channelStylePrompt, sameReferenceImage } from './channelCharacter'
 import { StopOnFailureBatch } from './serialBatch'
@@ -11,7 +13,7 @@ import { sceneCharacters } from '@shared/characters'
 import { compactImagePrompt, imageFingerprint, imageNeedsRefresh } from '@shared/imagePrompts'
 import { sceneSpans } from '@shared/flow'
 import { defaultVoiceFor } from '@shared/models'
-import { narrationSpeed, speechFingerprint, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
+import { effectiveDelivery, pronunciationText, narrationSpeed, speechFingerprint, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
 import { getImageModel, getVideoModel, imageBody, maxRefs, promptLimit, videoBody, type HfModel } from '@shared/higgsfield'
 import { getStyle } from '@shared/styles'
 import type { AspectRatio, Asset, Character, Clip, CreditEstimate, Job, Project, WordTiming } from '@shared/types'
@@ -442,8 +444,19 @@ function generateClipImageRemote(clipId: string, provider: 'cloudflare' | 'huggi
   })
 }
 
+function prepareFlowBatchImage(id:string):BatchImageRequest {
+  const clip=getClip(id),project=getProject(clip.projectId),chars=sceneCharacters(clip,charactersOf(project.id))
+  const identity=channelCharacterBytes(),style=channelStyleBytes(),primary:Buffer[]=identity?[identity]:[]
+  let styleNumber=0
+  if(style){if(identity&&sameReferenceImage(identity,style))styleNumber=1;else{primary.push(style);styleNumber=primary.length}}
+  const assets=chars.map(c=>getAsset(c.sheetAssetId)).filter((a):a is Asset=>!!a).slice(0,3-primary.length)
+  const references=[...primary,...assets.map(a=>readFileSync(assetAbsPath(project.id,a.localPath)))]
+  if(references.some(b=>b.length>20*1024*1024))throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
+  return {id,aspect:project.aspectRatio,references,prompt:channelCharacterPrompt()+channelStylePrompt(styleNumber)+clipPrompt(project,clip,chars,chars.filter(c=>assets.some(a=>a.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style),fingerprint:imageFingerprint(project,clip,chars),identityKey:JSON.stringify([channelCharacterKey(),channelStyleKey()])}
+}
+
 /** Flow has its own serial queue, and never uploads its references to another image provider. */
-function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { gate: StopOnFailureBatch; settingsKey: string }): Job {
+function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { gate: StopOnFailureBatch; settingsKey: string; parallel?: FlowImageBatch }, recover = false): Job {
   const target = kind === 'sheet' ? {characterId:id} : {clipId:id}
   const active = activeJobFor(target, kind)
   if (active) return active
@@ -459,7 +472,7 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     const chars = clip ? sceneCharacters(clip, charactersOf(projectId)) : []
     const refs = kind === 'video' ? [getAsset(clip!.imageAssetId)] : chars.map(c=>getAsset(c.sheetAssetId)).filter(Boolean).slice(0,3)
     if (kind === 'video' && !refs[0]) throw new Error('Buat gambar adegan dulu sebelum membuat video Flow.')
-    const identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey()]) : ''
+    let identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey()]) : ''
     const identity = kind === 'image' ? channelCharacterBytes() : null
     const style = kind === 'image' ? channelStyleBytes() : null
     const primary: Buffer[] = identity ? [identity] : []
@@ -469,14 +482,15 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
       else { primary.push(style); styleNumber = primary.length }
     }
     refs.splice(3 - primary.length)
-    const images: Buffer[] = [...primary, ...refs.filter((a):a is Asset=>!!a).map(a=>readFileSync(assetAbsPath(projectId,a.localPath)))]
+    let images: Buffer[] = [...primary, ...refs.filter((a):a is Asset=>!!a).map(a=>readFileSync(assetAbsPath(projectId,a.localPath)))]
     if (images.some(b=>b.length>20*1024*1024)) throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
-    const prompt = kind === 'sheet' ? sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : (clip!.videoPrompt.trim() || 'Animate the characters and environment subtly. Preserve the exact first frame and art style.') + ' No background music, no soundtrack or spoken dialogue.'
-    const fingerprint = clip ? imageFingerprint(project,clip,chars) : ''
-    ctx.progress(.2,settings.flowImageTransport==='browser'?(kind==='video'?'Menganimasikan gambar melalui Flow di Chrome…':'Membuat gambar melalui halaman Flow di Chrome…'):kind==='video'?'Flow sedang membuat gerak dari gambar awal…':'Flow sedang membuat gambar. Akun dipilih oleh backend lokal…')
+    let prompt = kind === 'sheet' ? sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : flowVideoPrompt(clip!)
+    let fingerprint = clip ? imageFingerprint(project,clip,chars) : ''
+    if(batch?.parallel&&kind==='image'){const request=batch.parallel.request(id);images=request.references;prompt=request.prompt;fingerprint=request.fingerprint;identityKey=request.identityKey}
+    ctx.progress(.2,recover?'Mengambil video yang sudah jadi di Flow…':settings.flowImageTransport==='browser'?(kind==='video'?'Menganimasikan gambar melalui Flow di Chrome…':'Membuat gambar melalui halaman Flow di Chrome…'):kind==='video'?'Flow sedang membuat gerak dari gambar awal…':'Flow sedang membuat gambar. Akun dipilih oleh backend lokal…')
     await ensureLocalFlow(settings.flowBaseUrl)
     ctx.signal.throwIfAborted()
-    const raw = await flow2api.generate(kind==='video'?'video':'image',prompt,project.aspectRatio,images,ctx.signal)
+    const raw = batch?.parallel&&kind==='image' ? await batch.parallel.image(id,ctx.signal) : recover ? await flow2api.recoverVideo(ctx.signal) : await flow2api.generate(kind==='video'?'video':'image',prompt,project.aspectRatio,images,ctx.signal)
     const bytes = kind==='video'?await normalizeFlowVideo(raw,ctx.signal):await normalizeGeneratedImage(raw)
     ctx.signal.throwIfAborted()
     ctx.progress(.88,'Memeriksa dan menyimpan hasil Flow…')
@@ -500,9 +514,12 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     touchProject(projectId)
     return asset.id
     }
+    if(batch?.parallel){if(!batch.parallel.canDrain(id)){await cancelJob(ctx.jobId);ctx.signal.throwIfAborted()}try{return await execute()}catch(error){batch.parallel.stop();throw error}}
     return batch ? batch.gate.run(ctx.signal, () => cancelJob(ctx.jobId), execute) : execute()
   })
 }
+
+export function recoverFlowVideo(clipId: string): Job { return generateFlowMedia(clipId, 'video', undefined, true) }
 
 export function generateCharacterSheet(characterId: string): Job {
   if (getSettings().imageProvider === 'flow2api') return generateFlowMedia(characterId, 'sheet')
@@ -566,7 +583,7 @@ export function generateClipTts(clipId: string): Job {
     const p = getProject(fresh.projectId)
     if (p.ttsProvider !== project.ttsProvider || p.ttsVoice !== project.ttsVoice) throw new Error('Pilihan suara berubah saat menunggu antrean. Coba lagi dengan pilihan terbaru.')
     const sourceText = fresh.narration.trim()
-    const text = stripSpeakerLabels(sourceText, charactersOf(p.id).map(c => c.name))
+    const text = pronunciationText(stripSpeakerLabels(sourceText, charactersOf(p.id).map(c => c.name)), p.language)
     if (!text) throw new Error('Naskah klip ini masih kosong')
     ctx.progress(0.2, 'Membuat suara')
     let rel: string
@@ -575,7 +592,7 @@ export function generateClipTts(clipId: string): Job {
     const voice = p.ttsVoice || defaultVoiceFor(p.ttsProvider)
     if (p.ttsProvider === 'elevenlabs') {
       if (!voice) throw new Error('Pilih suara ElevenLabs dulu di langkah Ide cerita.')
-      const out = await eleven.speak(text, voice, p.language, ctx.signal, undefined, p.editor.voiceDelivery ?? 'dramatic')
+      const out = await eleven.speak(text, voice, p.language, ctx.signal, undefined, effectiveDelivery(p))
       rel = saveFile(p.id, 'audio', '.mp3', out.audio)
       words = out.words
     } else if (p.ttsProvider === 'supertonic' || p.ttsProvider === 'f5-hf' || p.ttsProvider === 'f5-local') {
@@ -590,7 +607,7 @@ export function generateClipTts(clipId: string): Job {
         rmSync(take, { force: true })
       }
     } else {
-      const wav = await gemini.speak(text, voice, p.language, ctx.signal, p.editor.voiceDelivery ?? 'dramatic')
+      const wav = await gemini.speak(text, voice, p.language, ctx.signal, effectiveDelivery(p))
       rel = saveFile(p.id, 'audio', '.wav', wav)
     }
     ctx.progress(0.85, 'Mengukur durasi')
@@ -700,7 +717,9 @@ export function generateMissingImages(projectId: string, mode: 'missing' | 'all'
       if (mode === 'all' || imageNeedsRefresh(asset, project, clip, sceneCharacters(clip, characters))) return true
       try { if (asset) validateImageFile(assetAbsPath(projectId, asset.localPath)); return false } catch { return true }
     })
-    const batch = { gate: new StopOnFailureBatch(), settingsKey: flowBatchSettings(project) }
+    const usedAccounts:number[]=[]
+    const parallel=new FlowImageBatch(pending.map(c=>c.id),prepareFlowBatchImage,(requests,signal)=>flow2api.generateImageBatch(requests,signal,usedAccounts))
+    const batch = { gate: new StopOnFailureBatch(), settingsKey: flowBatchSettings(project), parallel }
     return pending.map(clip => generateFlowMedia(clip.id, 'image', batch))
   }
   const model = getImageModel(project.imageModel)

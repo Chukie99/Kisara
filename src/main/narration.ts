@@ -6,7 +6,7 @@ import ffmpegStatic from 'ffmpeg-static'
 import { WHISPER_TIMING, captionNeedsSync, estimateWordTimings } from '@shared/captions'
 import { TTS_WORDS_PER_SECOND, defaultVoiceFor } from '@shared/models'
 import { estimateNarrationMs } from '@shared/script'
-import { narrationNeedsRefresh, narrationSpeed, speechFingerprint, spokenWords, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
+import { effectiveDelivery, narrationTakeText, pronunciationText, narrationNeedsRefresh, narrationSpeed, speechFingerprint, spokenWords, stripSpeakerLabels, stripVoiceTags } from '@shared/speech'
 import type { Clip, Job, Project, WordTiming } from '@shared/types'
 import { emit } from './events'
 import { runJob, type TaskCtx } from './jobs'
@@ -123,8 +123,8 @@ async function whisperTimes(take: string, words: string[], p: Project, total: nu
 }
 
 async function geminiTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
-  // A long pause between scenes gives the cutter a clear gap to find.
-  const wav = await gemini.speak(group.map((c) => c.narration.trim()).join('\n<long pause>\n'), voice, p.language, ctx.signal, p.editor.voiceDelivery ?? 'dramatic')
+  // Keep deliberate paragraph pauses, but let visual cuts inside a sentence flow as one line.
+  const wav = await gemini.speak(narrationTakeText(group, '\n<long pause>\n'), voice, p.language, ctx.signal, effectiveDelivery(p))
   const take = join(tmp, `take-${randomUUID()}.wav`)
   writeFileSync(take, wav)
   return sliceTake(take, group, p, tmp, ctx, note)
@@ -134,19 +134,19 @@ async function geminiTake(p: Project, voice: string, group: NarrationClip[], tmp
 async function supertonicTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
   // A blank line is a paragraph pause in the studio, which gives the cutter a gap between scenes.
   const take = join(tmp, `take-${randomUUID()}.wav`)
-  await supertonic.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, getSettings().supertonicPreset, take, ctx.signal, narrationSpeed(p.editor.narrationSpeed))
+  await supertonic.speak(narrationTakeText(group), voice, getSettings().supertonicPreset, take, ctx.signal, narrationSpeed(p.editor.narrationSpeed))
   return sliceTake(take, group, p, tmp, ctx, note)
 }
 
 async function f5Take(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
   const take = join(tmp, `take-${randomUUID()}.wav`)
-  await f5.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, take, ctx.signal, progress)
+  await f5.speak(narrationTakeText(group), voice, take, ctx.signal, progress)
   return sliceTake(take, group, p, tmp, ctx, note)
 }
 
 async function f5LocalTake(p: Project, voice: string, group: NarrationClip[], tmp: string, ctx: TaskCtx, note: () => void, progress: (message: string) => void): Promise<Segment[]> {
   const take = join(tmp, `take-${randomUUID()}.wav`)
-  await f5Local.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, p.editor.narrationSpeed, take, ctx.signal, progress)
+  await f5Local.speak(narrationTakeText(group), voice, p.editor.narrationSpeed, take, ctx.signal, progress)
   return sliceTake(take, group, p, tmp, ctx, note)
 }
 
@@ -236,7 +236,7 @@ async function elevenTake(
   tmp: string,
   ctx: TaskCtx
 ): Promise<Segment[]> {
-  const r = await eleven.speak(group.map((c) => c.narration.trim()).join('\n\n'), voice, p.language, ctx.signal, context, p.editor.voiceDelivery ?? 'dramatic')
+  const r = await eleven.speak(narrationTakeText(group), voice, p.language, ctx.signal, context, effectiveDelivery(p))
   const take = join(tmp, `take-${randomUUID()}.mp3`)
   writeFileSync(take, r.audio)
   const total = (await probeDurationMs(take)) / 1000
@@ -323,7 +323,7 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
     const voice = p.ttsVoice || defaultVoiceFor(p.ttsProvider)
     if (p.ttsProvider === 'elevenlabs' && !voice) throw new Error('Pilih suara ElevenLabs dulu di langkah Ide cerita.')
     const speakers = charactersOf(projectId).map(c => c.name)
-    const clips: NarrationClip[] = targets.map((c) => getClip(c.id)).map(c => ({ ...c, sourceNarration: c.narration, narration: stripSpeakerLabels(c.narration, speakers) })).filter(c => c.narration.trim())
+    const clips: NarrationClip[] = targets.map((c) => getClip(c.id)).map(c => ({ ...c, sourceNarration: c.narration, narration: pronunciationText(stripSpeakerLabels(c.narration, speakers), p.language) })).filter(c => c.narration.trim())
     if (!clips.length) throw new Error('Tidak ada teks ucapan setelah label pembicara dibersihkan.')
     const groups = parts(clips, p.ttsProvider)
     const tmp = join(dataDir(), 'tmp', `narration-${ctx.jobId}`)
@@ -342,7 +342,7 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
                 p,
                 voice,
                 group,
-                { previous: groups[g - 1]?.map((c) => c.narration).join('\n\n'), next: groups[g + 1]?.map((c) => c.narration).join('\n\n') },
+                { previous: groups[g - 1] ? narrationTakeText(groups[g - 1]) : undefined, next: groups[g + 1] ? narrationTakeText(groups[g + 1]) : undefined },
                 tmp,
                 ctx
               )

@@ -44,7 +44,7 @@ interface ProviderOption<T extends string> {
   localStatus?: KeyTestResult | null
 }
 
-function StatusBadge({ status, localStatus }: { status?: KeyStatus; localStatus?: KeyTestResult | null }) {
+function StatusBadge({ status, localStatus, server=false }: { status?: KeyStatus; localStatus?: KeyTestResult | null; server?:boolean }) {
   if (localStatus !== undefined) return <Badge tone={localStatus?.ok ? 'ok' : 'draft'}>{localStatus?.ok ? 'Siap' : localStatus ? 'Belum tersambung' : 'Belum dites'}</Badge>
   if (!status?.configured) return <Badge tone="draft">Belum diatur</Badge>
   if (status.lastOk === false) return <Badge tone="bad">Gagal terhubung</Badge>
@@ -52,7 +52,7 @@ function StatusBadge({ status, localStatus }: { status?: KeyStatus; localStatus?
     return (
       <Badge tone="ok">
         <Check className="size-3" strokeWidth={3} />
-        Terhubung
+        {server?'Server tersambung':'Terhubung'}
       </Badge>
     )
   return <Badge tone="info">Tersimpan</Badge>
@@ -95,7 +95,7 @@ function ProviderSelect<T extends string>({ value, options, onChange }: { value:
           <span className="text-base font-bold">{cur.name}</span>
           <span className="truncate text-[13px] text-ink-2">{cur.note}</span>
         </span>
-        <StatusBadge status={cur.status} localStatus={cur.localStatus} />
+        <StatusBadge status={cur.status} localStatus={cur.localStatus} server={cur.id==='flow2api'} />
         <ChevronDown className={cx('size-5 shrink-0 transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
@@ -119,7 +119,7 @@ function ProviderSelect<T extends string>({ value, options, onChange }: { value:
                   <span className="text-[15px] font-semibold">{o.name}</span>
                   <span className="truncate text-[13px] text-ink-2">{o.note}</span>
                 </span>
-                <StatusBadge status={o.status} localStatus={o.localStatus} />
+                <StatusBadge status={o.status} localStatus={o.localStatus} server={o.id==='flow2api'} />
                 <span className="flex size-5 shrink-0 items-center justify-center">{on && <Check className="size-4 text-accent" strokeWidth={2.6} />}</span>
               </button>
             )
@@ -772,21 +772,21 @@ function FlowCard({settings,status,onChanged,onSettings}:{settings:AppSettings;s
   }
   const choices=(video:boolean)=>{const ids=(info?.models??[]).filter(id=>video?/veo|omni/.test(id)&&/landscape/.test(id):/-image-landscape(?:-|$)/.test(id));const selected=video?settings.flowVideoModel:settings.flowImageModel;return [...new Set([selected,...ids])].map(value=>({value,label:value}))}
   return <Card>
-    <div className="flex items-center gap-3"><ProviderLogo id="flow2api"/><div className="flex-1"><strong>Google Flow · server lokal</strong><p className="text-xs text-muted">Akun Google tetap dikelola di panel Flow2API.</p></div><StatusBadge status={status}/></div>
+    <div className="flex items-center gap-3"><ProviderLogo id="flow2api"/><div className="flex-1"><strong>Google Flow · server lokal</strong><p className="text-xs text-muted">Akun Google tetap dikelola di panel Flow2API.</p></div><StatusBadge status={status} server/></div>
     <p className="text-sm text-ink-2">Server lokal otomatis menyala saat Kisara dibuka jika Google Flow dipilih. Hubungkan langsung tanpa menyalin kunci.</p>
     <div className="flex flex-wrap gap-2"><Button variant="primary" loading={busy} onClick={()=>void connect(true)}>Hubungkan server lokal</Button><Button onClick={()=>void window.api.app.openExternal(base+'/manage')}>Buka panel akun</Button></div>
     <details><summary className="cursor-pointer text-sm">Alamat dan API key manual</summary><div className="mt-3 flex flex-col gap-2"><label className="text-sm">Alamat Flow2API<input aria-label="Alamat Flow2API" className={inputCls} value={base} disabled={busy} onChange={e=>setBase(e.target.value)}/></label><label className="text-sm">API key Flow2API<input type="password" autoComplete="off" aria-label="API key Flow2API" placeholder="Kosongkan untuk memakai kunci tersimpan" className={inputCls} value={key} disabled={busy} onChange={e=>setKey(e.target.value)}/></label><Button loading={busy} onClick={()=>void connect(false)}>Simpan dan tes Flow</Button></div></details>
     {error&&<p role="alert" className="rounded-lg bg-bad-soft p-3 text-sm text-bad-ink">{error}</p>}
     {info&&<p role="status" className="text-sm">{info.message} {settings.flowImageTransport==='api' ? info.failover?'Pemilihan akun saat limit: aktif.':'Pemilihan akun masih mengikuti backend. Mulai ulang Flow2API setelah pembaruan.':''}</p>}
-    {status?.configured && <FlowWorkers key={status.checkedAt} browserMode={settings.flowImageTransport==='browser'}/>}
     <Field label="Cara membuat gambar Flow"><Select label="Cara membuat gambar Flow" value={settings.flowImageTransport} onChange={value=>void window.api.settings.set({flowImageTransport:value as 'api'|'browser'}).then(onSettings)} options={[{value:'browser',label:'Lewat halaman Chrome',hint:'Nano Banana 2.1, mengikuti rasio proyek, dengan referensi karakter dan gaya. Chrome dan satu proyek Flow harus terbuka.'},{value:'api',label:'Lewat API Flow2API',hint:'Jalur lama; dapat ditolak Google walaupun sesi dan worker tersambung.'}]}/></Field>
-    {settings.flowImageTransport==='browser' && <Field label="Akun untuk gambar Flow"><Select label="Akun untuk gambar Flow" value={String(settings.flowBrowserAccountId)} onChange={value=>void window.api.settings.set({flowBrowserAccountId:Number(value)}).then(onSettings)} options={[{value:'0',label:'Otomatis · pindah akun saat kuota habis'},...flowAccounts.map(a=>({value:String(a.id),label:a.email,hint:a.workerConnected?'Worker tersambung':'Buka Chrome profil akun ini'}))]}/></Field>}
+    {settings.flowImageTransport==='browser' && <Field label="Akun untuk gambar Flow"><Select label="Akun untuk gambar Flow" value={String(settings.flowBrowserAccountId)} onChange={value=>void window.api.settings.set({flowBrowserAccountId:Number(value)}).then(onSettings)} options={[{value:'0',label:'Otomatis · pilih akun dengan halaman siap'},...flowAccounts.map(a=>({value:String(a.id),label:a.email,hint:a.workerConnected?'Lihat kesiapan halaman pada kartu akun':'Buka Chrome profil akun ini'}))]}/></Field>}
+    {status?.configured && <FlowWorkers key={status.checkedAt} browserMode={settings.flowImageTransport==='browser'} selectedAccountId={settings.flowBrowserAccountId}/>}
     {settings.flowImageTransport==='api' && <>
     <Field label="Model gambar Flow"><Select label="Model gambar Flow" value={settings.flowImageModel} onChange={flowImageModel=>void window.api.settings.set({flowImageModel}).then(onSettings)} options={choices(false)}/></Field>
     <Field label="Model image-to-video Flow"><Select label="Model image-to-video Flow" value={settings.flowVideoModel} onChange={flowVideoModel=>void window.api.settings.set({flowVideoModel}).then(onSettings)} options={choices(true)}/></Field>
     </>}
-    {settings.flowImageTransport==='browser' && <p className="text-sm text-muted">Nano Banana 2.1 · satu gambar per klip · rasio otomatis mengikuti proyek (16:9 atau 9:16). Biarkan Chrome dan satu proyek Flow terbuka. Mode Otomatis memakai satu akun sampai kuota habis, lalu lanjut akun berikutnya. Buka satu proyek Flow di setiap profil akun yang akan dipakai. Kuota diperiksa sebelum mengirim prompt; jika hasil sudah dikirim tetapi belum pasti, antrean berhenti. Akun yang kuotanya habis dilewati sampai kamu memilihnya manual dan berhasil membuat gambar. Video dan unggahan referensi belum tersedia.</p>}
-    <p className="text-xs text-muted">Generasi berjalan satu per satu. Tidak ada batas buatan 20 gambar. Kuota Google tetap berlaku; hasil yang sudah jadi tersimpan per adegan. Tes koneksi belum membuktikan worker atau generasi berhasil.</p>
+    {settings.flowImageTransport==='browser' && <p className="text-sm text-muted">Buka tepat satu proyek Flow pada setiap profil Chrome yang dipakai. Mode Otomatis memeriksa halaman sebelum mengirim: akun dengan proyek belum siap dilewati. Buat semua mengirim maksimal 10 prompt per akun per putaran; hasil masuk ke klip masing-masing. Rasio mengikuti proyek dan referensi karakter ikut dipasang. Video dibuat dari gambar adegan yang sudah siap.</p>}
+    <p className="text-xs text-muted">{settings.flowImageTransport==='browser' ? 'Akun berikutnya menunggu kelompok gambar selesai. Jika Google membatasi aktivitas atau hasil belum pasti, generasi dijeda.' : 'Generasi API berjalan dalam antrean. Tes koneksi server belum membuktikan generasi Google berhasil.'}</p>
   </Card>
 }
 

@@ -1,3 +1,4 @@
+import { stripVoiceTags } from '@shared/speech'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
@@ -44,7 +45,7 @@ async function voicePart(audio: Asset, clipId: string, fromMs: number, toMs: num
     prompt,
     localPath: rel,
     durationMs: (toMs ?? audio.durationMs ?? fromMs) - fromMs,
-    meta: { ...audio.meta, words }
+    meta: { ...audio.meta, words, spokenText: stripVoiceTags(prompt) }
   })
   emit.asset(asset)
   return asset
@@ -90,7 +91,7 @@ export async function splitClip(clipId: string, atMs: number): Promise<ProjectBu
         }
       }
       const spokenBefore = words.filter((w) => w.start * 1000 < cutIn).length
-      ;[narrationA, narrationB] = splitNarration(clip.narration, spokenBefore)
+      ;[narrationA, narrationB] = splitNarration(typeof audio.meta.spokenText === 'string' ? audio.meta.spokenText : clip.narration, spokenBefore)
       const partA = await voicePart(audio, clip.id, 0, cutIn, narrationA)
       const partB = await voicePart(audio, newId, cutIn, null, narrationB)
       voiceA = { audioAssetId: partA.id, voiceInMs: span.inMs, voiceOutMs: null, voiceStartMs: span.startMs }

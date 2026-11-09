@@ -1,4 +1,10 @@
-import { chooseBrowserAccount, recordBrowserQuota, recordBrowserSuccess, sweepTransient } from './flowAccountRouter'
+import { flowReadiness } from '../../shared/flowReadiness'
+import type { BatchImageRequest, BatchImageResult } from '../flowImageBatch'
+import { app } from 'electron'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { isAbsolute, relative, extname } from 'node:path'
+import { browserJson } from './flowBrowserHttp'
+import { browserQuotaAccounts, chooseBrowserAccount, recordBrowserQuota, recordBrowserSuccess, sweepTransient } from './flowAccountRouter'
 import { assertFlowNotPaused, claimFlowAttempt, finishFlowAttempt, flowPause, pauseFlow, resumeFlow } from './flowGuard'
 import type { FlowBrowserInspection, FlowSetup } from '@shared/production'
 import type { AspectRatio, KeyTestResult } from '@shared/types'
@@ -109,11 +115,34 @@ function generationGuardBase(): string {
   const s = getSettings(), base = flowBase(s.flowBaseUrl)
   return s.flowImageTransport === 'browser' ? base + '/browser' : base
 }
-async function browserAccount(): Promise<number> {
+async function selectReadyBrowserAccount(candidates:number[], accounts:FlowSetup['accounts'], signal?:AbortSignal):Promise<number> {
+  const settings=getSettings(),base=flowBase(settings.flowBaseUrl),remaining=[...candidates],issues:string[]=[]
+  while(remaining.length){
+    signal?.throwIfAborted()
+    const id=chooseBrowserAccount(base,remaining,settings.flowBrowserAccountId)
+    const account=accounts.find(a=>a.id===id)!,label=account.email||`Akun ${id}`
+    try{
+      const result=flowReadiness(await inspectFlowBrowser(id))
+      if(result.state==='ready')return id
+      if(result.state==='blocked'){
+        pauseFlow(generationGuardBase(),'unusual_activity')
+        throw Object.assign(new Error(`${label}: ${result.detail}`),{flowCode:'unusual_activity'})
+      }
+      throw Object.assign(new Error(`${result.label}. ${result.detail}`),{flowPreflight:true})
+    }catch(error){
+      if(!(error&&typeof error==='object'&&'flowPreflight' in error))throw error
+      const message=`${label}: ${error instanceof Error?error.message:'Halaman belum siap.'}`
+      if(settings.flowBrowserAccountId)throw new Error(message)
+      issues.push(message);remaining.splice(remaining.indexOf(id),1)
+    }
+  }
+  throw new Error('Belum ada akun Flow dengan halaman siap. '+issues.join(' '))
+}
+async function browserAccount(signal?:AbortSignal): Promise<number> {
   const base = flowBase(getSettings().flowBaseUrl)
   sweepTransient(base)
-  const setup = await flowSetup(), selected = getSettings().flowBrowserAccountId
-  return chooseBrowserAccount(base, setup.accounts.filter(a => a.workerConnected && a.imageEnabled).map(a => a.id), selected)
+  const setup = await flowSetup()
+  return selectReadyBrowserAccount(setup.accounts.filter(a=>a.active&&a.workerConnected&&a.imageEnabled).map(a=>a.id),setup.accounts,signal)
 }
 async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspect: AspectRatio, references: Buffer[], signal: AbortSignal): Promise<Buffer> {
   if (!['16:9','9:16'].includes(aspect) || references.length > 3 || (kind === 'video' && references.length !== 1)) throw new Error('Flow memerlukan rasio 16:9/9:16, maksimal tiga referensi gambar, atau tepat satu gambar awal untuk video.')
@@ -121,7 +150,7 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
   assertFlowNotPaused(guard)
   if ((references.length || kind === 'video') && (await flowSetup()).browserMediaVersion !== 2) throw new Error('Server Flow masih versi lama. Mulai ulang server Flow2API agar referensi karakter dan video terbaca. Permintaan belum dikirim.')
   if (kind === 'video' && getSettings().flowVideoInputMode === 'frames' && (await flowSetup()).browserFramesVersion !== 1) throw new Error('Mulai ulang server Flow2API untuk mengaktifkan mode Frames. Video belum dikirim.')
-  let accountId = await browserAccount()
+  let accountId = await browserAccount(signal)
   const automatic = !getSettings().flowBrowserAccountId
   const trial = claimFlowAttempt(guard)
   let sent = false
@@ -132,11 +161,10 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
       if (attempted.has(accountId)) throw new Error('Tidak ada akun Flow berikutnya yang siap.')
       attempted.add(accountId)
       sent = true
-      const response = await fetch(base + '/api/kisara/browser/image', {
-        method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId, prompt, aspect, kind, video_input_mode: getSettings().flowVideoInputMode, references: references.map(b => 'data:image/' + (b[0]===0xff?'jpeg':b.toString('ascii',0,4)==='RIFF'?'webp':'png') + ';base64,' + b.toString('base64')) }), signal: timeout(signal, kind === 'video' ? 735000 : 405000)
-      })
-      const value = await response.json() as { mediaUrl?: string; detail?: string }
+      const started = Date.now()
+      const response = await browserJson(base + '/api/kisara/browser/image', key,
+        { account_id: accountId, prompt, aspect, kind, video_input_mode: getSettings().flowVideoInputMode, references: references.map(b => 'data:image/' + (b[0]===0xff?'jpeg':b.toString('ascii',0,4)==='RIFF'?'webp':'png') + ';base64,' + b.toString('base64')) }, timeout(signal, kind === 'video' ? 735000 : 405000))
+      const value = await response.json() as { mediaUrl?: string; detail?: string; downloadFile?: { path: string; size: number } }
       if (!response.ok) {
         const code = value.detail
         if (code === 'quota_exhausted') {
@@ -144,7 +172,7 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
           recordBrowserQuota(base, accountId)
           if (trial) throw new Error('Kuota akun Flow habis. Percobaan setelah jeda berakhir; periksa akun di Pengaturan sebelum melanjutkan.')
           if (!automatic) throw new Error('Kuota akun Flow habis. Pilih Otomatis untuk memakai akun berikutnya; hasil yang sudah jadi tetap tersimpan.')
-          accountId = await browserAccount()
+          accountId = await browserAccount(signal)
           continue
         }
         if (code === 'google_blocked') throw new Error('Google menolak generasi pada halaman Flow. Proses dijeda; periksa langsung di Chrome sebelum mencoba lagi.')
@@ -169,7 +197,7 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
                   existing_draft: 'Kotak prompt Flow masih berisi teks. Simpan atau kosongkan sendiri di Chrome sebelum mencoba lagi.',
                   browser_busy: 'Proyek Flow masih mengerjakan generasi lain. Tunggu hasilnya di Chrome.',
                   approval_required: 'Flow meminta persetujuan biaya di Chrome. Kisara tidak menyetujuinya otomatis. Periksa hasil sebelum mengulang.',
-                  image_model_not_verified: 'Pilih Nano Banana 2.1 pada pengaturan gambar Flow di Chrome.',
+                  image_model_not_verified: 'Kisara belum berhasil memilih Nano Banana 2.1 di Flow. Permintaan belum dikirim; muat ulang Worker 1.5.2.',
                   image_settings_not_unique: 'Kontrol gambar Flow berubah. Permintaan tidak dikirim; perlu pemeriksaan penghubung.',
                   browser_not_ready: 'Buka tepat satu proyek Flow di profil Chrome akun yang dipilih.',
                   browser_not_unique: 'Route Key dipakai lebih dari satu worker. Sisakan satu worker untuk akun ini.',
@@ -186,8 +214,9 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
                 // Keep ambiguous paid submissions paused; quota is the only automatic failover proof.
                 throw new Error(messages[code || ''] || 'Hasil Flow belum dapat dipastikan. Periksa proyek di Chrome sebelum mencoba lagi; permintaan tidak diulang.')
       }
-      if (typeof value.mediaUrl !== 'string') throw new Error('Flow tidak mengembalikan gambar yang valid.')
-      const result = await media(base, key, value.mediaUrl, timeout(signal, 60000), kind)
+      if (!value.downloadFile && typeof value.mediaUrl !== 'string') throw new Error('Flow tidak mengembalikan media yang valid.')
+      if (value.downloadFile && kind !== 'video') throw new Error('Flow mengembalikan jenis media yang salah.')
+      const result = value.downloadFile ? browserDownloadedFile(value.downloadFile, started) : await media(base, key, value.mediaUrl!, timeout(signal, 60000), kind)
       recordBrowserSuccess(base, accountId)
       if (trial) finishFlowAttempt(guard, true)
       return result
@@ -196,6 +225,27 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
     if (sent) pauseFlow(guard, error instanceof Error && error.message.startsWith('Google menolak') ? 'unusual_activity' : 'uncertain_result')
     throw error
   } finally { if (trial) finishFlowAttempt(guard, false) }
+}
+
+function browserDownloadedFile(value: { path: string; size: number }, started: number): Buffer {
+  const file = realpathSync(value.path), root = realpathSync(app.getPath('downloads')), rel = relative(root, file), stat = statSync(file)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel) || extname(file).toLowerCase() !== '.mp4' || !stat.isFile() || stat.size !== value.size || stat.size <= 0 || stat.size > 40 * 1024 * 1024 || stat.mtimeMs < started - 5000) throw new Error('Unduhan Flow belum terverifikasi di folder Downloads. Pakai Impor video untuk folder unduhan khusus.')
+  return readFileSync(file)
+}
+
+/** Recover only the video explicitly opened in Chrome; this endpoint never clicks Generate. */
+export async function recoverVideo(signal: AbortSignal): Promise<Buffer> {
+  const settings = getSettings(), base = flowBase(settings.flowBaseUrl), key = requireSecret('flow2api')
+  if (settings.flowImageTransport !== 'browser') throw new Error('Pengambilan ini memerlukan Flow melalui Chrome.')
+  const setup = await flowSetup(), accounts = setup.accounts.filter(a => a.workerConnected && a.imageEnabled)
+  const accountId = settings.flowBrowserAccountId || (accounts.length === 1 ? accounts[0].id : 0)
+  if (!accountId) throw new Error('Pilih akun Flow yang videonya ingin diambil di Pengaturan Google Flow.')
+  const started = Date.now()
+  const response = await browserJson(base + '/api/kisara/browser/image', key, { account_id: accountId, kind: 'video', recover: true, selected: true, prompt: 'Recover the video explicitly opened by the user.' }, timeout(signal, 735000))
+  const value = await response.json() as { mediaUrl?: string; detail?: string; downloadFile?: { path: string; size: number } }
+  if (response.ok && value.downloadFile) return browserDownloadedFile(value.downloadFile, started)
+  if (!response.ok || !value.mediaUrl) throw new Error(value.detail === 'browser_busy_or_uncertain' ? 'Pengambilan sebelumnya masih berjalan. Tunggu sampai selesai.' : 'Buka video yang sesuai di Flow sampai pemutarnya terlihat, lalu ambil lagi. Tidak ada generasi baru yang dikirim.')
+  return media(base, key, value.mediaUrl, timeout(signal, 60000), 'video')
 }
 
 export async function generate(kind: 'image'|'video', prompt: string, aspect: AspectRatio, references: Buffer[], signal: AbortSignal): Promise<Buffer> {
@@ -244,7 +294,8 @@ export async function flowSetup(): Promise<FlowSetup> {
   if (!r.ok) throw new Error('Pemeriksaan worker belum tersedia. Mulai ulang server Flow2API setelah pembaruan.')
   const data = await r.json() as FlowSetup
   if (!Array.isArray(data.accounts) || !Array.isArray(data.workers) || typeof data.extensionMode !== 'boolean' || data.accounts.length > 200 || data.workers.length > 200 || data.accounts.some(a=>!a || !Number.isInteger(a.id) || typeof a.email!=='string' || typeof a.routeKey!=='string' || typeof a.workerConnected!=='boolean' || typeof a.active!=='boolean' || typeof a.imageEnabled!=='boolean') || data.workers.some(w=>!w || typeof w.routeKey!=='string' || typeof w.label!=='string')) throw safeFailure('')
-  return { ...data, generationPause: flowPause(generationGuardBase()) }
+  const exhausted=browserQuotaAccounts(base)
+  return { ...data, accounts:data.accounts.map(a=>({...a,quotaExhausted:exhausted.includes(a.id)})), generationPause: flowPause(generationGuardBase()) }
 }
 export async function resumeFlowGeneration(): Promise<FlowSetup> {
   const data = await flowSetup()
@@ -285,8 +336,61 @@ export async function inspectFlowBrowser(accountId: number): Promise<FlowBrowser
     method: 'POST', headers: { Authorization: 'Bearer ' + requireSecret('flow2api'), 'Content-Type': 'application/json' },
     body: JSON.stringify({ account_id: accountId }), signal: timeout(undefined, 20000)
   })
-  if (!response.ok) throw new Error(response.status === 504 ? 'Muat ulang worker versi 1.2.0, lalu buka satu proyek Flow di Chrome.' : 'Halaman belum dapat diperiksa. Buka tepat satu proyek Flow pada profil akun ini dan periksa koneksi worker.')
+  if (!response.ok) {
+    if(response.status===401||response.status===403)throw safeFailure('',response.status)
+    const detail=(await response.json().catch(()=>({}))) as {detail?:string}
+    if(detail.detail==='google_blocked')return {host:'flow.google.com',projectOpen:true,blocked:true,fields:[],buttons:[],options:[]}
+    if(response.status===409||response.status===504)throw Object.assign(new Error(response.status===504?'Worker belum merespons pemeriksaan halaman. Periksa Chrome lalu perbarui kesiapan.':'Worker tersambung, tetapi satu proyek Flow belum dapat dibaca. Sisakan tepat satu tab proyek pada profil akun ini.'),{flowPreflight:true})
+    throw new Error('Server Flow gagal memeriksa halaman. Periksa koneksi server lokal.')
+  }
   const value = await response.json() as FlowBrowserInspection
   if (value.host !== 'flow.google.com' || typeof value.projectOpen !== 'boolean' || typeof value.blocked !== 'boolean' || !Array.isArray(value.fields) || !Array.isArray(value.buttons) || !Array.isArray(value.options)) throw new Error('Respons pemeriksaan browser Flow tidak valid.')
   return value
+}
+
+/** One account owns a whole group. Only explicit quota refusal with zero submitted jobs may move it. */
+export async function generateImageBatch(requests:BatchImageRequest[],signal:AbortSignal,usedAccounts:number[]):Promise<BatchImageResult[]> {
+  const settings=getSettings(),base=flowBase(settings.flowBaseUrl),guard=generationGuardBase()
+  if(!requests.length||requests.length>10||new Set(requests.map(r=>r.id)).size!==requests.length)throw new Error('Kelompok gambar harus berisi 1-10 klip unik.')
+  assertFlowNotPaused(guard)
+  if(flowPause(guard))throw new Error('Uji satu gambar biasa dulu untuk menyelesaikan jeda Flow sebelum menjalankan mode 10 gambar.')
+  const setup=await flowSetup()
+  if(setup.browserBatchVersion!==1)throw new Error('Mulai ulang server Flow2API untuk memakai mode 10 gambar.')
+  const ready=setup.accounts.filter(a=>a.active&&a.workerConnected&&a.imageEnabled&&!usedAccounts.includes(a.id)).map(a=>a.id)
+  if(!ready.length)throw new Error('Semua akun siap sudah mendapat jatah maksimal 10 gambar pada putaran ini. Hasil tersimpan; lanjutkan sisanya pada putaran berikutnya.')
+  const key=requireSecret('flow2api')
+  for(;;){
+    signal.throwIfAborted()
+    const accountId=await selectReadyBrowserAccount(ready,setup.accounts,signal)
+    usedAccounts.push(accountId)
+    let sent=false
+    try{
+      sent=true
+      const response=await browserJson(base+'/api/kisara/browser/image-batch',key,{account_id:accountId,tasks:requests.map(r=>({id:r.id,prompt:r.prompt,aspect:r.aspect,references:r.references.map(bytes=>'data:image/'+(bytes[0]===0xff?'jpeg':bytes.toString('ascii',0,4)==='RIFF'?'webp':'png')+';base64,'+bytes.toString('base64'))}))},timeout(signal,615000))
+      const body=await response.json() as {detail?:string;results?:{id:string;mediaUrl?:string;error?:string;submitted?:boolean}[]}
+      if(!response.ok){
+        if(['batch_worker_outdated','browser_not_ready','browser_not_unique','browser_busy_or_uncertain'].includes(body.detail||''))sent=false
+        throw new Error(body.detail==='batch_worker_outdated'?'Muat ulang Worker 1.6.0 di profil Chrome akun ini. Belum ada gambar yang dikirim.':'Batch Flow belum dapat dijalankan. Periksa worker dan hasil di Chrome sebelum mencoba lagi.')
+      }
+      const rows=body.results
+      if(!Array.isArray(rows)||rows.length!==requests.length||new Set(rows.map(r=>r.id)).size!==requests.length||rows.some(r=>!requests.some(q=>q.id===r.id)||!!r.mediaUrl===!!r.error))throw new Error('Pemetaan hasil Flow belum dapat dipastikan; permintaan tidak diulang.')
+      const rejected=rows.every(r=>!r.submitted&&!r.mediaUrl)
+      if(rejected&&rows.some(r=>r.error==='quota_exhausted')&&!rows.some(r=>r.error==='google_blocked')){
+        sent=false;recordBrowserQuota(base,accountId)
+        if(settings.flowBrowserAccountId)throw new Error('Kuota akun habis. Pilih Otomatis untuk memakai akun berikutnya.')
+        const i=ready.indexOf(accountId);if(i>=0)ready.splice(i,1)
+        continue
+      }
+      if(rows.some(r=>r.error==='google_blocked'))pauseFlow(guard,'unusual_activity')
+      else if(rows.some(r=>r.error&&r.submitted))pauseFlow(guard,'uncertain_result')
+      const results:BatchImageResult[]=[]
+      for(const row of rows){
+        if(row.error){results.push({id:row.id,error:row.error==='google_blocked'?'Google menolak aktivitas di Flow. Antrean dijeda; akun tidak diganti.':row.error==='batch_stopped'?'Belum dikirim karena kelompok dihentikan.':'Batch Flow berhenti: '+row.error+'. Periksa hasil di Chrome; permintaan tidak diulang.'});continue}
+        try{results.push({id:row.id,bytes:await media(base,key,row.mediaUrl!,timeout(signal,60000),'image')})}
+        catch{pauseFlow(guard,'uncertain_result');results.push({id:row.id,error:'Hasil sudah dibuat tetapi belum diunduh. Periksa Flow; jangan buat ulang.'})}
+      }
+      if(results.every(r=>r.bytes))recordBrowserSuccess(base,accountId)
+      return results
+    }catch(error){if(sent)pauseFlow(guard,'uncertain_result');throw error}
+  }
 }

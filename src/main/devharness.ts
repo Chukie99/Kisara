@@ -1,5 +1,11 @@
+import { visualStatus } from './visualRuns'
+import { visualDraftFingerprint, writeVisualDraft } from './visualDrafts'
+import { randomUUID } from 'node:crypto'
+import { publicationSource } from '@shared/publication'
+import { createServer } from 'node:http'
+import { flowVideoPrompt } from '@shared/flow'
 import { channelCharacterBytes, channelCharacterKey, importChannelCharacter, channelStyleBytes, channelStyleKey, channelStylePrompt, sameReferenceImage } from './channelCharacter'
-import { insertJob, updateJob } from './repo'
+import { divideUnproducedShots, insertClipAfter, insertJob, updateJob } from './repo'
 import { prepareMediaImport, applyMediaImport, discardMediaImport } from './mediaImport'
 import { isolatedHarnessProfile, runFixtureTool } from './devHarnessTools'
 import assert from 'node:assert/strict'
@@ -12,7 +18,7 @@ import { anchorPoint } from '@shared/overlays'
 import { startExport } from './exporter'
 import { assetAbsPath, binPath } from './paths'
 import { probeDurationMs } from './services/audio'
-import { applyScriptRefinement, applyVisuals, createProject, getBundle, getJob, insertAsset, patchClip, patchClipText, repairCharacterLinks, replaceScript, replaceStory, saveSnapshot, touchProject } from './repo'
+import { applyScriptRefinement, applyVisuals, createProject, getBundle, getJob, insertAsset, patchEditor, patchClip, patchClipText, repairCharacterLinks, replaceScript, replaceStory, saveSnapshot, touchProject } from './repo'
 import { validateImageBytes, validateImageFile } from './imageQuality'
 import { waitForJob } from './jobs'
 import { composeSceneSpeech, stripSpeakerLabels } from '@shared/speech'
@@ -223,7 +229,7 @@ export function attachDevHarness(win: BrowserWindow): void {
   const planPath = process.env.STUDIO_CAPTURE_PLAN
   if (!planPath) return
   let plan: {
-    main?: 'mockStyleUpload' | 'channelCharacter' | 'speakerLabels' | 'mockFlowBatch' | 'mockFlowProfiles' | 'mockNarrationAudit' | 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks' | 'mockComprehension'
+    main?: 'visualReviewChecks' | 'shotChecks' | 'mockBrainstorm' | 'mockFlowReadiness' | 'mockFlowTenBatch' | 'mockPublication' | 'publicationChecks' | 'mockFlowCanvasBatch' | 'recoverFlowVideo' | 'videoToolbar' | 'mockStyleUpload' | 'channelCharacter' | 'speakerLabels' | 'mockFlowBatch' | 'mockFlowProfiles' | 'mockNarrationAudit' | 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks' | 'mockComprehension'
     size?: [number, number]
     exportTo?: string
     /** For main "export": an existing project instead of the seeded demo. */
@@ -258,8 +264,74 @@ export function attachDevHarness(win: BrowserWindow): void {
       try {
         if (step.size) { win.unmaximize(); win.setSize(...step.size) }
         if (step.main === 'seed') demoId = seedDemo()
+        if (step.main === 'visualReviewChecks' && demoId) {
+          const b = getBundle(demoId)
+          saveSnapshot({ ...b, clips: b.clips.map((clip, index) => ({ ...clip, visualPrompt: '', videoPrompt: '', visualSource: null, narration: index === 1 ? b.clips[0].narration : clip.narration })) })
+          const bundle = getBundle(demoId)
+          const issue = { scene: 2, kind: 'script' as const, quote: 'The same explanatory action', reason: 'Narasi adegan 2 mengulang adegan 1 tanpa perkembangan. Perbaiki naskah sebelum mengganti gambarnya.' }
+          writeVisualDraft(demoId, { fingerprint: visualDraftFingerprint('missing', bundle.project, bundle.characters, bundle.clips), groupSize: 6, plan: { world: 'Indonesia', characters: [], scenes: bundle.clips.map((_, i) => ({ scene: i+1, setting: 'Indonesia', action: 'The same explanatory action', characters: [], wardrobe: [] })) }, reviewIssues: [issue] })
+          const status = visualStatus(demoId)
+          assert.equal(status?.status, 'failed'); assert.equal(status.completed, 4); assert.equal(status.total, 4); assert.deepEqual(status.visualIssues, [issue])
+          saveSnapshot({ ...bundle, project: { ...bundle.project, title: 'Uji review storyboard', step: 2 } })
+          console.log('NATIVE VISUAL REVIEW RECOVERY PASS: real checkpoint, source fingerprint and numbered script reason. No model or generation calls.')
+          if (step.ok === true) {
+            setSettings({ llmProvider: 'custom', customBaseUrl: 'http://writer.invalid/v1', llmModels: { ...getSettings().llmModels, custom: 'refine-findings-fixture' } })
+            setSecret('custom', 'synthetic-refine-key'); recordCheck('custom', true, 'Fixture lokal')
+            globalThis.fetch = async (input, init) => {
+              const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+              if (url.hostname !== 'writer.invalid') throw new Error('Network disabled in refine fixture')
+              if (url.pathname.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'refine-findings-fixture' }] }))
+              const body = JSON.parse(String(init?.body)), system = String(body.messages[0].content), prompt = String(body.messages[1].content)
+              let result: unknown
+              if (system.includes('You are a critical editor') || system.includes('You are a claim auditor')) result = { issues: [] }
+              else {
+                assert(system.includes('Several adjacent short shots'))
+                assert(prompt.includes('Current storyboard findings:') && prompt.includes(issue.reason))
+                assert(prompt.includes('The configured duration is only a ceiling'))
+                const source = getBundle(demoId!).clips
+                result = { scenes: [0, 2, 3].map(i => ({ sourceScene: i+1, title: source[i].title, story: source[i].story, narration: source[i].narration, dialogue: [] })) }
+                console.log('NATIVE REFINE FINDINGS REQUEST PASS: exact review reason, actual word budget and source IDs')
+              }
+              return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }))
+            }
+          }
+
+        }
+        if (step.main === 'shotChecks' && demoId) {
+          const original = getBundle(demoId)
+          const narration = 'Kenzo menyiram tanaman di depan rumahnya. Tetangganya melirik sambil berjalan menuju tempat kerja. Kenzo kemudian membuka ponsel untuk memeriksa pembayaran dividen bulan ini.'
+          const clean = { ...original.clips.at(-1)!, id: randomUUID(), title: 'Pagi Kenzo', story: 'Ilustrasi Kenzo menyiram tanaman, dilihat tetangga, lalu membuka ponsel.', narration, durationMs: 15000, imageAssetId: null, audioAssetId: null, videoAssetId: null, visualPrompt: '', visualSource: null, videoPrompt: '', motionType: 'camera' as const, voiceInMs: 0, voiceOutMs: null, voiceStartMs: 0, mediaInMs: 0 }
+          insertClipAfter(original.clips.at(-1)!.id, clean)
+          const job = insertJob({ projectId: demoId, kind: 'image', clipId: clean.id, provider: 'demo' })
+          assert.equal(divideUnproducedShots(demoId), 0, 'An in-flight media queue must prevent subdivision')
+          updateJob(job.id, { status: 'canceled' })
+          const added = divideUnproducedShots(demoId)
+          assert(added >= 2)
+          const result = getBundle(demoId)
+          assert.deepEqual(result.clips.slice(0, original.clips.length), original.clips, 'Produced clips and their asset links must survive')
+          const shots = result.clips.slice(original.clips.length)
+          assert.equal(shots.map(c => c.narration).join(''), narration)
+          assert.equal(shots.reduce((n, c) => n + c.durationMs, 0), 15000)
+          assert(shots.every(c => c.durationMs <= 7000 && c.story.includes(c.narration.trim()) && !c.imageAssetId && !c.audioAssetId))
+          assert.equal(divideUnproducedShots(demoId), 0, 'Retry must not keep adding shots')
+          saveSnapshot({ ...result, project: { ...result.project, title: 'Uji pembagian shot visual', step: 2, editor: { ...result.project.editor, flowMode: 'image' } } })
+          console.log('NATIVE VISUAL SHOTS PASS: real SQLite, asset preservation, queue guard, lossless narration, total duration, shot focus and retry stability. ' + shots.length + ' shots / 15 seconds.')
+        }
         if (step.main === 'mockFlowBatch' && demoId) {
           for (const clip of getBundle(demoId).clips.slice(1)) patchClip(clip.id, {imageAssetId:null})
+        }
+        if(step.main==='mockFlowReadiness'){
+          setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBrowserAccountId:0});setSecret('flow2api','synthetic-readiness-key');recordCheck('flow2api',true,'Server fixture tersambung')
+          for(const channel of ['settings:flowSetup','settings:flowStatus','settings:flowProfiles','settings:inspectFlowBrowser'])ipcMain.removeHandler(channel)
+          const accounts=[1,2,3,4].map(id=>({id,email:['judi','acek','dwiki','affiliate'][id-1]+'@example.test',routeKey:'acct-'+id,workerConnected:true,active:true,imageEnabled:true,quotaExhausted:step.ok===false&&id===1}))
+          ipcMain.handle('settings:flowSetup',()=>({accounts,workers:accounts.map(a=>({routeKey:a.routeKey,label:a.email})),extensionMode:true,generationPause:step.ok===false?{code:'uncertain_result',pausedAt:Date.now()}:undefined}))
+          ipcMain.handle('settings:flowStatus',()=>({ok:true,message:'Server tersambung; kesiapan proyek diperiksa terpisah.',models:[],activeAccounts:4,failover:true}))
+          ipcMain.handle('settings:flowProfiles',()=>[])
+          ipcMain.handle('settings:inspectFlowBrowser',(_e,id:number)=>{
+            assert(accounts.some(a=>a.id===id))
+            if(id===1)throw new Error('Worker tersambung, tetapi satu proyek Flow belum dapat dibaca. Sisakan tepat satu tab proyek pada profil akun ini.')
+            return {host:'flow.google.com',projectOpen:true,blocked:false,composer:{editors:1,draftLength:id===4?100:0,submitCount:1,submitDisabled:true,busy:id===3,online:true},fields:[],buttons:[],options:[]}
+          })
         }
         if (step.main === 'mockFlowProfiles') {
           setSettings({imageProvider:'flow2api'});setSecret('flow2api','synthetic-profile-key');recordCheck('flow2api',true,'Fixture lokal')
@@ -286,7 +358,7 @@ export function attachDevHarness(win: BrowserWindow): void {
             if (url.hostname !== 'writer.invalid') throw new Error('Network is disabled in this harness fixture')
             const body = JSON.parse(String(init?.body)), system = body.messages[0].content as string, prompt = body.messages[1].content as string
             let result: object
-            if (system.includes('You are now the critical editor')) {
+            if ((system.includes('You are a critical editor') || system.includes('You are a claim auditor'))) {
               await sleep(300)
               const draft = JSON.parse(prompt.split('Read the complete spoken draft:\n')[1]) as {scene:number;narration:string}[]
               const issue = step.ok === false || draft[0].narration.includes('langsung')
@@ -412,6 +484,47 @@ export function attachDevHarness(win: BrowserWindow): void {
               return new Response(new Uint8Array(readFileSync(file)), { headers: { 'Content-Type': 'audio/wav' } })
             }
             throw new Error('Unexpected mock F5 route')
+          }
+        }
+        if (step.main === 'mockBrainstorm') {
+          const ideas = JSON.parse(readFileSync(join(dirname(planPath), 'brainstorm-fixture.json'), 'utf8'))
+          if (step.ok != null) {
+            setSettings({ llmProvider: 'custom', customBaseUrl: 'http://writer.invalid/v1', llmModels: { ...getSettings().llmModels, custom: 'brainstorm-language-fixture' } })
+            setSecret('custom', 'synthetic-brainstorm-language-key')
+            recordCheck('custom', true, 'Fixture lokal')
+            let requests = 0
+            globalThis.fetch = async (input, init) => {
+              const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+              if (url.hostname !== 'writer.invalid') throw new Error('Network disabled in brainstorm fixture')
+              if (url.pathname.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'brainstorm-language-fixture' }] }))
+              const body = JSON.parse(String(init?.body))
+              const system = String(body.messages[0].content)
+              assert(system.includes('Seluruh isi ide wajib berbahasa Indonesia'))
+              if (step.ok === false) {
+                requests++
+                console.log('NATIVE BRAINSTORM JSON ATTEMPT ' + requests)
+                if (requests === 1) return new Response(JSON.stringify({ choices: [{ message: { content: 'Berikut beberapa ide dalam bentuk prosa, bukan JSON.' }, finish_reason: 'stop' }] }))
+                if (requests === 2) {
+                  assert.equal(body.response_format.type, 'json_object')
+                  return new Response(JSON.stringify({ error: { message: 'response_format is unsupported' } }), { status: 400 })
+                }
+                assert.equal(requests, 3)
+                assert(!body.response_format && system.includes('Regenerate the COMPLETE answer'))
+                console.log('NATIVE BRAINSTORM JSON RECOVERY PASS')
+                return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ideas }) }, finish_reason: 'stop' }] }))
+              }
+              const repair = system.includes('You correct the language of existing editorial candidates')
+              assert.equal(++requests, repair ? 2 : 1, 'One initial request and one language correction')
+              const output = repair ? ideas : ideas.map((idea: Record<string, unknown>, i: number) => ({ ...idea, title: `Your Paycheck Is Smaller Than You Think ${i}`, hook: 'You get paid, but why are you already running out of money?' }))
+              console.log('NATIVE BRAINSTORM LANGUAGE ' + (repair ? 'REPAIR' : 'ENGLISH FIXTURE') + ' PASS')
+              return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ideas: output }) } }] }), { headers: { 'Content-Type': 'application/json' } })
+            }
+          } else {
+          ipcMain.removeHandler('story:brainstorm')
+          ipcMain.handle('story:brainstorm', (_event, category: string, language: string, _direction: string, _previous: string[], format: string) => {
+            assert.equal(category, 'finance'); assert.equal(language, 'id'); assert.equal(format, 'long')
+            return ideas
+          })
           }
         }
         if (step.main === 'mockWriter') {
@@ -605,6 +718,124 @@ export function attachDevHarness(win: BrowserWindow): void {
         if (step.main === 'videos' && demoId) addDemoVideos(demoId)
         if (step.main === 'speech' && demoId) await addDemoSpeech(demoId)
         if (step.main === 'dialogue' && demoId) await addDemoSpeech(demoId, true)
+        if (step.main === 'videoToolbar' && demoId) {
+          for (const clip of getBundle(demoId).clips) patchClip(clip.id, { audioAssetId: null, videoAssetId: null, motionType: 'camera' })
+          setSettings({ imageProvider: 'flow2api' })
+          touchProject(demoId, { step: 3 })
+        }
+        if (step.main === 'mockPublication' && demoId) {
+          const server=createServer(async(req,res)=>{
+            let raw='';for await(const chunk of req)raw+=chunk
+            const body=JSON.parse(raw)
+            assert(body.messages.some((m:{content:string})=>m.content.includes('publication metadata')))
+            res.setHeader('Content-Type','application/json')
+            res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({title:'Kenapa Sumpah Palapa Jadi Titik Balik Majapahit?',description:'Gajah Mada mengucapkan Sumpah Palapa di Majapahit. Video ini merangkai peristiwa dan konsekuensinya lewat adegan ilustrasi.',hashtags:['#Majapahit','#SumpahPalapa','#SejarahIndonesia'],thumbnail:{headline:'SUMPAH BESAR',concept:'Gajah Mada mengangkat tangan di depan balairung Majapahit.',prompt:'Landscape 16:9 thumbnail, Gajah Mada mengangkat tangan dengan ekspresi tegas, balairung sederhana di belakang, warna emas dan merah. Teks besar tepat: SUMPAH BESAR. Ikuti gaya visual dan referensi karakter proyek, tanpa watermark.'}})}}]}))
+          })
+          await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));server.unref()
+          const address=server.address();assert(address&&typeof address==='object')
+          setSettings({llmProvider:'custom',customBaseUrl:`http://127.0.0.1:${address.port}/v1`,llmModels:{...getSettings().llmModels,custom:'publication-fixture'}})
+          patchEditor(demoId,{publication:undefined});touchProject(demoId,{step:3})
+          dialog.showSaveDialog=async()=>({canceled:false,filePath:join(app.getPath('userData'),'publication-fixture.txt')})
+        }
+        if (step.main === 'publicationChecks' && demoId) {
+          const b=getBundle(demoId),p=b.project.editor.publication
+          assert(p&&p.origin==='ai')
+          assert.equal(p.source,publicationSource(b.project,b.clips))
+          assert.equal(p.hashtags.length,3)
+          assert.equal(p.thumbnail?.headline,'SUMPAH BESAR')
+          const text=readFileSync(join(app.getPath('userData'),'publication-fixture.txt'),'utf8')
+          assert(text.includes(p.title)&&text.includes(p.description)&&text.includes('#SumpahPalapa'))
+          console.log('PUBLICATION NATIVE PASS: actual model client, generation IPC, metadata persisted with project, TXT export, three relevant hashtags')
+        }
+        if (step.main === 'mockFlowTenBatch' && demoId) {
+          const initial=getBundle(demoId), sample=initial.clips[0]
+          const bytes=readFileSync(assetAbsPath(demoId,initial.assets.find(a=>a.id===sample.imageAssetId)!.localPath))
+          for(let i=0;i<8;i++){
+            const tail=getBundle(demoId).clips.at(-1)!
+            insertClipAfter(tail.id,{...sample,id:randomUUID(),title:`Adegan batch ${i+5}`,visualPrompt:`Kenzo counts coins for scene ${i+5}`,imageAssetId:null,videoAssetId:null})
+          }
+          for(const clip of getBundle(demoId).clips)patchClip(clip.id,{imageAssetId:null,videoAssetId:null})
+          touchProject(demoId,{coverAssetId:null,step:3})
+          const groups:{account:number;ids:string[]}[]=[]
+          const server=createServer(async(req,res)=>{
+            if(req.url?.startsWith('/api/kisara/browser/media/')){res.setHeader('Content-Type','image/png');res.end(bytes);return}
+            res.setHeader('Content-Type','application/json')
+            if(req.url==='/api/kisara/status'){res.end(JSON.stringify({browserBatchVersion:1,browserMediaVersion:2,extensionMode:true,workers:[],accounts:[1,2].map(id=>({id,email:`fixture${id}@example.test`,routeKey:`fixture${id}`,workerConnected:true,active:true,imageEnabled:true}))}));return}
+            if(req.url==='/api/kisara/browser/inspect'){res.end(JSON.stringify({host:'flow.google.com',projectOpen:true,blocked:false,composer:{editors:1,draftLength:0,submitCount:1,submitDisabled:true,busy:false,online:true},fields:[],buttons:[],options:[]}));return}
+            if(req.url!=='/api/kisara/browser/image-batch'){res.statusCode=404;res.end('{}');return}
+            try{
+              let raw='';for await(const chunk of req)raw+=chunk
+              const body=JSON.parse(raw);assert(body.tasks.length<=10)
+              groups.push({account:body.account_id,ids:body.tasks.map((t:{id:string})=>t.id)})
+              const address=server.address();assert(address&&typeof address==='object')
+              res.end(JSON.stringify({results:body.tasks.toReversed().map((t:{id:string})=>({id:t.id,mediaUrl:`http://127.0.0.1:${address.port}/api/kisara/browser/media/${t.id}`,submitted:true}))}))
+            }catch(e){console.log('TEN FIXTURE ERROR',String(e));res.statusCode=500;res.end('{}')}
+          })
+          await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve))
+          try{
+            const address=server.address();assert(address&&typeof address==='object')
+            setSecret('flow2api','synthetic-ten-key')
+            setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBaseUrl:`http://127.0.0.1:${address.port}`,flowBrowserAccountId:0})
+            const jobs=await win.webContents.executeJavaScript(`window.api.generate.missingImages(${JSON.stringify(demoId)})`,true)
+            await Promise.all(jobs.map((job:{id:string})=>waitForJob(job.id)))
+            for(const job of jobs){const result=getJob(job.id);assert.equal(result?.status,'done',result?.error||'Batch image failed')}
+            const result=getBundle(demoId)
+            assert.equal(result.clips.length,12);assert(result.clips.every(c=>c.imageAssetId))
+            assert.deepEqual(groups.map(g=>g.ids.length),[10,2]);assert.notEqual(groups[0].account,groups[1].account)
+            for(const clip of result.clips){const asset=result.assets.find(a=>a.id===clip.imageAssetId);assert.equal(asset?.clipId,clip.id);assert(asset?.prompt?.includes(clip.visualPrompt))}
+            console.log('TEN NATIVE PASS: real IPC, twelve image jobs, 10+2 in two accounts, reversed results attached to correct clips, assets normalized and saved. Local fixture only.')
+          }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()))}
+        }
+        if (step.main === 'mockFlowCanvasBatch' && demoId) {
+          const downloads=join(app.getPath('userData'),'fixture-downloads'),previousDownloads=app.getPath('downloads')
+          mkdirSync(downloads,{recursive:true});app.setPath('downloads',downloads)
+          const input=readFileSync(join(app.getAppPath(),'tmp','bugcheck','canvas-input.mp4')),clips=getBundle(demoId).clips
+          let calls=0
+          const server=createServer(async(req,res)=>{
+            res.setHeader('Content-Type','application/json')
+            if(req.url==='/api/kisara/status'){res.end(JSON.stringify({browserMediaVersion:2,extensionMode:true,workers:[],accounts:[{id:1,email:'canvas@example.test',routeKey:'fixture',workerConnected:true,active:true,imageEnabled:true}]}));return}
+            if(req.url==='/api/kisara/browser/inspect'){res.end(JSON.stringify({host:'flow.google.com',projectOpen:true,blocked:false,composer:{editors:1,draftLength:0,submitCount:1,submitDisabled:true,busy:false,online:true},fields:[],buttons:[],options:[]}));return}
+            if(req.url!=='/api/kisara/browser/image'){res.statusCode=404;res.end('{}');return}
+            try{
+              let raw='';for await(const chunk of req)raw+=chunk
+              const body=JSON.parse(raw),clip=clips[calls]
+              assert.equal(body.kind,'video');assert.equal(body.recover,undefined);assert.equal(body.references.length,1)
+              assert.equal(body.prompt,flowVideoPrompt(clip))
+              const path=join(downloads,`canvas-${++calls}.mp4`);writeFileSync(path,input)
+              res.end(JSON.stringify({downloadFile:{path,size:input.length}}))
+            }catch{res.statusCode=500;res.end('{}')}
+          })
+          await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve))
+          try{
+            const address=server.address();assert(address&&typeof address==='object')
+            setSecret('flow2api','synthetic-canvas-key')
+            setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBaseUrl:`http://127.0.0.1:${address.port}`,flowBrowserAccountId:1})
+            const jobs=await win.webContents.executeJavaScript(`window.api.generate.missingVideos(${JSON.stringify(demoId)})`,true)
+            await Promise.all(jobs.map((job:{id:string})=>waitForJob(job.id)))
+            for(const job of jobs){const result=getJob(job.id);assert.equal(result?.status,'done',result?.error || 'Canvas batch failed')}
+            const result=getBundle(demoId)
+            assert.equal(calls,clips.length)
+            assert(result.clips.every(c=>c.videoAssetId&&c.motionType==='video'))
+            assert(result.assets.filter(a=>a.kind==='video').every(a=>a.durationMs&&a.durationMs>100))
+            console.log('CANVAS BATCH NATIVE PASS: four ordered I2V jobs, shared prompt, one reference each, downloaded files normalized and attached; no TTS or Google requests')
+          }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));app.setPath('downloads',previousDownloads)}
+        }
+        if (step.main === 'recoverFlowVideo' && demoId) {
+          const key=process.env.STUDIO_RECOVER_FLOW_KEY
+          if(!key)throw new Error('Missing isolated recovery fixture key')
+          setSecret('flow2api',key)
+          setSettings({imageProvider:'flow2api',flowBaseUrl:'http://127.0.0.1:8765',flowImageTransport:'browser',flowBrowserAccountId:1})
+          const clipId=getBundle(demoId).clips[0].id
+          const job=await win.webContents.executeJavaScript(`window.api.generate.recoverFlowVideo(${JSON.stringify(clipId)})`,true)
+          await waitForJob(job.id)
+          const done=getJob(job.id),bundle=getBundle(demoId),clip=bundle.clips[0],asset=bundle.assets.find(a=>a.id===clip.videoAssetId)
+          assert.ok(done)
+          assert.equal(done.status,'done',done.error || 'Recovery did not finish')
+          assert.equal(clip.motionType,'video')
+          assert.equal(asset?.kind,'video')
+          assert.ok(asset?.durationMs && asset.durationMs>100)
+          console.log('RECOVERY NATIVE PASS: actual IPC, existing Flow MP4, normalization, asset saved, video attached to isolated clip')
+        }
         if (step.main === 'mockStyleUpload') {
           const file = join(app.getAppPath(), 'resources', 'kenzo.png')
           let calls = 0

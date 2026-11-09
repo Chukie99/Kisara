@@ -1,0 +1,5 @@
+TEKS: 0% KOK MAHAL?
+
+KONSEP: Kenzo terkejut melihat tagihan panjang, label promo 0% besar dan dompet kosong. Latar biru gelap, aksen merah-kuning, satu karakter. Tidak menambahkan angka tagihan yang belum diverifikasi.
+
+PROMPT: Buat thumbnail landscape 16:9 bergaya kartun 2D sesuai referensi Kenzo. Tepat satu Kenzo, rambut hitam acak, kemeja biru, sedikit janggut. Close-up reaksi kaget sambil memegang tagihan panjang. Label merah 0% besar di kiri, dompet kosong kecil di bawah. Teks besar tepat: 0% KOK MAHAL? Kontras navy, kuning dan merah, tetap terbaca di layar kecil, margin aman. Tanpa grafik, karakter tambahan, angka harga, teks lain atau watermark.

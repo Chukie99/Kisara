@@ -2,11 +2,19 @@ import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'n
 import { join } from 'node:path'
 import { projectDir } from './paths'
 import type { VisualPlan } from './story'
+import { createHash } from 'node:crypto'
+import type { Character, Clip, Project, VisualReviewIssue } from '@shared/types'
 
 export interface VisualDraft {
   fingerprint: string
   plan: VisualPlan
   groupSize: number
+  reviewIssues?: VisualReviewIssue[]
+}
+
+/** Status recovery uses the same source binding as generation, so a stale review cannot block new text. */
+export function visualDraftFingerprint(mode: 'missing' | 'all', project: Project, characters: Character[], clips: Clip[]): string {
+  return createHash('sha256').update(JSON.stringify(['visual-draft-v6-shot-focus', mode, project.synopsis, project.language, project.styleId, project.aspectRatio, characters.map(c => [c.id, c.name, c.description]), clips.map(c => [c.id, c.title, c.story, c.narration, c.visualPrompt])])).digest('hex')
 }
 
 const file = (id: string) => join(projectDir(id), 'visual-draft.json')
@@ -31,6 +39,8 @@ export function readVisualDraft(projectId: string, fingerprint: string): VisualD
       if (['framing', 'avoid', 'camera', 'strength', 'motion', 'transition'].some((key) => scene[key] != null && !text(scene[key]))) return null
     }
     if (plan.characters.some((c) => !record(c) || !text(c.name) || !c.name.trim() || !text(c.identity ?? '') || !text(c.outfit ?? ''))) return null
+    const plannedScenes = plan.scenes
+    if (draft.reviewIssues != null && (!Array.isArray(draft.reviewIssues) || draft.reviewIssues.length > 20 || draft.reviewIssues.some(issue => !record(issue) || !Number.isInteger(issue.scene) || !text(issue.quote) || !issue.quote.trim() || !text(issue.reason) || !issue.reason.trim() || issue.reason.length > 1800 || (issue.kind != null && !['script', 'visual'].includes(String(issue.kind))) || !plannedScenes.some(scene => record(scene) && scene.scene === issue.scene && text(scene.action) && scene.action.includes(String(issue.quote)))))) delete draft.reviewIssues
     return draft as unknown as VisualDraft
   } catch {
     return null

@@ -1,0 +1,9 @@
+Use the supplied scene image as the first frame. Preserve the exact character identities, faces, ages, proportions, hairstyles, wardrobe, background, props, composition and illustration style throughout the shot. The supplied image overrides conflicting descriptions or character names in the motion direction.
+
+Motion direction: Budi slowly extends his finger to tap the highlighted total area on the phone screen while the yellow glow pulses softly to draw attention. The phone screen remains stable as Budi's arm moves rhythmically.
+
+Animate the existing subjects or physical environment, not just a zoom or pan over a frozen picture. Keep motion modest, natural and consistent with the reference. One continuous shot, no cuts, montage, new people, duplicate characters, extra limbs, added objects or invented events.
+
+Narrative context only (do not speak or display it): Selalu cek total pembayaran akhir hingga lunas, bukan sekadar tergiur tulisan bunga 0%.
+
+Keep existing text and numbers in the supplied image stable and unchanged; do not add new labels, subtitles, numbers, logos or watermarks. Do not animate lips for narration. No spoken dialogue, voiceover, background music or soundtrack. Keep the original aspect ratio. Finish on a stable pose.

@@ -235,14 +235,17 @@ async function chatJson(c: Compat, model: string, system: string, prompt: string
   requireKey(c)
   const schemaText = JSON.stringify(schema)
   // Custom routers may silently switch upstream providers. Prompt-only JSON avoids incompatible flags.
-  const modes: Mode[] = c.provider === 'custom' ? ['plain', 'json_object'] : ['json_schema', 'json_object', 'plain']
+  const modes: Mode[] = c.provider === 'custom' ? ['plain', 'json_object', 'plain'] : ['json_schema', 'json_object', 'plain']
   let lastError: unknown = null
-  for (const mode of modes) {
+  let badReply: BadReply | null = null
+  for (const [attempt, mode] of modes.entries()) {
+    signal?.throwIfAborted()
     // Some local proxies accept response_format but ignore it, so the custom model must also see the schema.
-    const sys =
+    let sys =
       mode === 'json_schema' && c.provider !== 'custom'
         ? system
         : `${system}\n\nReply with ONE JSON object only (no markdown, no commentary) that matches this JSON Schema:\n${schemaText}`
+    if (attempt > 0 && badReply) sys += '\nThe previous response was '+(badReply.message === 'length' ? 'cut off before completion' : badReply.message === 'empty' ? 'empty' : 'not readable as JSON')+'. Regenerate the COMPLETE answer from the original request. Keep text concise while preserving every required entry, field and the requested output language. Return only the JSON object, without reasoning or a preamble. Do not invent missing facts.'
     const body: Record<string, unknown> = {
       model,
       messages: [
@@ -271,7 +274,8 @@ async function chatJson(c: Compat, model: string, system: string, prompt: string
       const choice = r.choices?.[0]
       const inlineError = r.error?.message ?? (choice?.finish_reason === 'error' ? (choice.error?.message ?? 'error') : null)
       if (inlineError) throw new LlmError(friendlyStatus(c, 400, inlineError), 400, inlineError)
-      if (choice?.message?.refusal) throw new LlmError('Model menolak permintaan ini. Tinjau isi cerita atau pilih model lain.', 403)
+      if (choice?.message?.refusal || choice?.finish_reason === 'content_filter') throw new LlmError('Model menolak permintaan ini. Tinjau isi cerita atau pilih model lain.', 403)
+      if (choice?.finish_reason === 'length') throw new BadReply('length')
       const text = contentText(choice?.message?.content)
       if (!text.trim()) throw new BadReply(choice?.finish_reason === 'length' ? 'length' : 'empty')
       try {
@@ -282,14 +286,16 @@ async function chatJson(c: Compat, model: string, system: string, prompt: string
     } catch (e) {
       if (signal?.aborted) throw e
       lastError = e
-      if (e instanceof BadReply || (mode !== 'plain' && formatUnsupported(e))) continue
+      if (e instanceof BadReply) { badReply = e; continue }
+      if (mode !== 'plain' && formatUnsupported(e)) continue
       throw e
     }
   }
+  if (badReply?.message === 'length')
+    throw new LlmError(`Jawaban model "${model}" terpotong sebelum selesai setelah dicoba ulang. Ringkas permintaan atau pilih model dengan output lebih panjang; hasil belum diterapkan.`)
   if (lastError instanceof LlmError) throw lastError
-  if (lastError instanceof BadReply && lastError.message === 'length')
-    throw new LlmError(`Jawaban model "${model}" terpotong sebelum selesai. Coba durasi video lebih pendek atau model dengan output lebih panjang.`)
-  throw new LlmError(`Model "${model}" tidak menghasilkan JSON yang valid. Coba pilih model lain di Pengaturan.`)
+  if (badReply?.message === 'empty') throw new LlmError(`Model "${model}" mengirim jawaban kosong setelah dicoba ulang. Coba lagi nanti; hasil sebelumnya tetap aman.`)
+  throw new LlmError(`Jawaban model "${model}" belum bisa dibaca sebagai JSON setelah dicoba ulang. Coba lagi atau pilih model penulis lain; hasil sebelumnya tetap aman.`)
 }
 
 export interface ActiveLlm {

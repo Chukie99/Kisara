@@ -1,3 +1,4 @@
+import { flowVideoPrompt } from '@shared/flow'
 import { MediaImportButton } from './MediaImportButton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -442,7 +443,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                 aria-label="Arahan gerak video"
                 className={cx(inputCls, 'py-2 text-[13px] leading-relaxed')}
               />
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   variant={video ? 'secondary' : 'accent'}
@@ -463,6 +464,11 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                 >
                   Impor video
                 </Button>
+                {usesFlow && <Button size="sm" variant="secondary" onClick={() => void run(async () => { await window.api.app.copyText(flowVideoPrompt(clip)); toast('success', 'Prompt image-to-video disalin. Pasang gambar adegan ini di Flow, lalu tempel prompt.'); })}>Salin prompt video</Button>}
+                {usesFlow && image && <Button size="sm" variant="secondary" disabled={isRunning(videoJob)} onClick={() => void run(async () => {
+                  const ok = await confirmDialog({ title: 'Ambil video yang sudah jadi', body: 'Di Chrome akun Flow yang dipilih, buka video untuk adegan ini sampai pemutarnya terlihat. Video itu akan dipasang pada klip “' + clip.title + '”. Tidak membuat video baru atau memakai kredit.', confirm: 'Ambil video dari Flow' })
+                  if (ok) await window.api.generate.recoverFlowVideo(clip.id)
+                })}>Ambil video dari Flow</Button>}
                 {!image && <span className="text-xs text-muted">Buat gambar dulu, lalu jadikan video.</span>}
                 {isRunning(videoJob) && (
                   <span className="text-xs text-sun-ink">
@@ -594,10 +600,7 @@ export function StoryboardStep() {
   // Videos are made last: every clip has its picture, and the voice is final so each video matches its clip length.
   const readyForVideo =
     clips.length > 0 &&
-    clips.every((c) => c.imageAssetId) &&
-    narration.voiced > 0 &&
-    narration.stale === 0 &&
-    !narration.running
+    clips.every((c) => c.imageAssetId) && stats.imageRunning === 0
   const makeVideos = async (): Promise<void> => {
     const n = stats.needVideo.length
     const ok = await confirmDialog({
@@ -694,6 +697,7 @@ export function StoryboardStep() {
           className="border-[1.5px] border-ink font-semibold"
           icon={<ImageIcon className="size-[17px]" />}
           disabled={!stats.needImg || stats.imageRunning > 0}
+          title={usesFlow && flowSettings?.flowImageTransport === 'browser' ? 'Sekali kirim maksimal 10 prompt per akun. Pilih Otomatis untuk lanjut ke akun berikutnya; tiap akun satu kelompok per putaran.' : undefined}
           onClick={() => void bulk(() => window.api.generate.missingImages(project.id))}
         >
           {stats.imageRunning ? `Antrean ${stats.imageRunning} gambar` : `Buat ${stats.needImg} gambar`}
@@ -701,9 +705,27 @@ export function StoryboardStep() {
             <span className="font-normal text-ink-2">≈ {Math.round(credits * stats.needImg * 10) / 10} kr</span>
           )}
         </Button>
+          <Button
+            variant="primary"
+            icon={<Clapperboard className="size-[17px]" />}
+            loading={stats.videoRunning > 0}
+            disabled={!readyForVideo || stats.videoRunning > 0 || stats.needVideo.length === 0 || pipelineRunning}
+            title={readyForVideo ? "Animasikan setiap gambar menjadi video AI. Suara narasi dapat dibuat terpisah." : "Selesaikan gambar semua klip dulu sebelum membuat video sekaligus."}
+            onClick={() => void makeVideos()}
+          >
+            {stats.videoRunning > 0
+              ? `Membuat ${stats.videoRunning} video`
+              : stats.needVideo.length === 0
+                ? 'Semua klip sudah video'
+                : `Jadikan ${stats.needVideo.length} video`}
+            {stats.videoRunning === 0 && videoCredits != null && stats.needVideo.length > 0 && (
+              <span className="font-normal text-white/80">≈ {Math.round(videoCredits * 10) / 10} kr</span>
+            )}
+          </Button>
         <MediaImportButton />
-        <Button disabled={!clips.length} onClick={() => updateProject({ step: 2 })}>Prompt Google Flow</Button>
         <details className="relative shrink-0" aria-label="Alat generasi tambahan"><summary className="cursor-pointer rounded-xl border border-line px-3 py-2.5 text-sm">Alat lainnya</summary><div className="absolute right-0 top-full z-40 mt-2 flex max-h-[60vh] w-[320px] flex-col gap-2 overflow-y-auto rounded-xl border border-line bg-surface p-3 shadow-xl"><p className="text-xs text-muted">Generasi langsung di Kisara. Periksa layanan dan biaya sebelum menjalankan.</p>
+        <Button disabled={!clips.length} onClick={() => updateProject({ step: 2 })}>Prompt Google Flow</Button>
+
         <Button
           variant="primary"
           icon={<Sparkles className="size-[17px]" />}
@@ -731,31 +753,13 @@ export function StoryboardStep() {
         >
           Gambar ulang semua
         </Button>
-        {readyForVideo && (
-          <Button
-            variant="primary"
-            icon={<Clapperboard className="size-[17px]" />}
-            loading={stats.videoRunning > 0}
-            disabled={stats.videoRunning > 0 || stats.needVideo.length === 0}
-            title="Semua gambar dan suara narasi sudah siap. Setiap klip dijadikan video AI sepanjang suaranya."
-            onClick={() => void makeVideos()}
-          >
-            {stats.videoRunning > 0
-              ? `Membuat ${stats.videoRunning} video`
-              : stats.needVideo.length === 0
-                ? 'Semua klip sudah video'
-                : `Jadikan ${stats.needVideo.length} video`}
-            {stats.videoRunning === 0 && videoCredits != null && stats.needVideo.length > 0 && (
-              <span className="font-normal text-white/80">≈ {Math.round(videoCredits * 10) / 10} kr</span>
-            )}
-          </Button>
-        )}
         </div></details>
       </div>
 
       <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_540px]">
         <section className="scroll-thin flex min-h-0 flex-col gap-3.5 overflow-y-auto px-6 pb-6 pt-[18px]">
-          {stats.imageRunning > 0 && <section role="status" aria-label="Antrean gambar" className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 text-sm"><div className="flex-1"><strong>{stats.imgs}/{clips.length} gambar siap · {stats.imageRunning} pekerjaan berjalan atau menunggu</strong><p className="text-xs text-muted">Hasil disimpan per klip. Antrean Flow berhenti jika ada pekerjaan gagal.</p></div><Button size="sm" onClick={()=>void Promise.all(Object.values(jobs).filter(j=>j.kind==='image' && isRunning(j)).map(j=>window.api.generate.cancel(j.id)))}>Hentikan antrean</Button></section>}
+          {usesFlow && flowSettings?.flowImageTransport === 'browser' && stats.needImg > 0 && !stats.imageRunning && <p className="text-xs text-muted">Sekali kirim maksimal 10 prompt per akun. Pilih akun Otomatis untuk lanjut ke akun berikutnya; setiap akun mendapat satu kelompok per putaran. Gambar yang sudah siap tetap disimpan.</p>}
+          {stats.imageRunning > 0 && <section role="status" aria-label="Antrean gambar" className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 text-sm"><div className="flex-1"><strong>{stats.imgs}/{clips.length} gambar siap · {stats.imageRunning} pekerjaan berjalan atau menunggu</strong><p className="text-xs text-muted">{usesFlow && flowSettings?.flowImageTransport === 'browser' ? 'Satu kiriman berisi maksimal 10 prompt pada satu akun. Akun berikutnya menunggu hasil kelompok ini selesai. Tiap akun mendapat satu kelompok per putaran; antrean dijeda jika hasil belum pasti.' : 'Gambar diproses dalam antrean dan dipasang pada klip masing-masing.'}</p></div><Button size="sm" onClick={()=>void Promise.all(Object.values(jobs).filter(j=>j.kind==='image' && isRunning(j)).map(j=>window.api.generate.cancel(j.id)))}>Hentikan antrean</Button></section>}
           {narration.running && <section role="status" aria-label="Proses narasi" className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-4 text-sm"><strong>Narasi sedang diproses · {narration.voiced}/{clips.length} adegan tersimpan</strong><p>{narration.message}</p><progress aria-label="Progres narasi" value={narration.progress} max={1} className="w-full accent-accent"/><Button size="sm" className="self-start" onClick={() => void narration.cancel()}>Batalkan pembuatan narasi</Button></section>}
           <div className="flex items-center gap-3">
             <h1 className="font-display text-2xl font-bold">Visual & suara</h1>

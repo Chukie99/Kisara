@@ -5,7 +5,7 @@ import { Button } from '../../components/ui'
 import { errorText } from '../../lib/format'
 import { useProject } from '../../store/project'
 
-export function ScriptReviewPanel({ onScene }: { onScene: (clipId: string) => void }): React.JSX.Element | null {
+export function ScriptReviewPanel({ onScene, onRepair, repairing = false }: { onScene: (clipId: string) => void; onRepair?: () => void; repairing?: boolean }): React.JSX.Element | null {
   const { project, clips, flush, updateEditor } = useProject()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,7 +35,8 @@ export function ScriptReviewPanel({ onScene }: { onScene: (clipId: string) => vo
       <summary className="cursor-pointer text-sm font-semibold">Periksa naskah <span className="ml-2 font-normal text-muted">{findings.length ? findings.length + ' hal untuk ditinjau' : 'Tidak ada masalah pola yang terdeteksi'}</span></summary>
       <div className="mt-4 flex flex-col gap-3">
         <p className="text-xs leading-relaxed text-muted">Pemeriksaan lokal mencari teks kosong, pengulangan, istilah, dan durasi. Temuan adalah petunjuk penyuntingan; bukan verifikasi fakta atau jaminan monetisasi.</p>
-        <div className="flex flex-wrap items-center gap-3"><Button size="sm" loading={busy} onClick={() => void review()}>Minta tinjauan AI</Button><span className="text-xs text-muted">Memakai model penulis yang kamu pilih; mengirim naskah dan memakai kuota layanan.</span></div>
+        <div className="flex flex-wrap items-center gap-3"><Button size="sm" loading={busy} disabled={repairing} onClick={() => void review()}>Minta tinjauan AI</Button><span className="text-xs text-muted">Memakai model penulis yang kamu pilih; mengirim naskah dan memakai kuota layanan.</span></div>
+        {onRepair && findings.some(f => f.kind !== 'source') && <div className="flex flex-wrap items-center gap-3"><Button variant="primary" loading={repairing} disabled={busy} onClick={onRepair}>Perbaiki temuan naskah</Button><span className="text-xs text-muted">Memakai temuan versi ini untuk merevisi isi; naskah lama dipertahankan sampai hasil lengkap.</span></div>}
         {busy && <p role="status" className="text-sm">AI sedang memeriksa naskah. Batas waktu 90 detik; kamu bisa tetap membaca.</p>}
         {report && !current && <p className="text-sm text-sun-ink">Naskah atau ide berubah. Tinjauan AI sebelumnya sudah tidak berlaku.</p>}
         {current && <p className="text-xs text-muted">Tinjauan AI tersimpan untuk versi naskah ini. {report.findings.length === 0 ? 'AI tidak menandai masalah tambahan; tetap tinjau hasilnya sendiri.' : ''}</p>}

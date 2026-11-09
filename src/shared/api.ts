@@ -1,3 +1,4 @@
+import type { PublicationMetadata } from './types'
 import type { FlowBrowserInspection, FlowProfile, FlowSetup } from './production'
 import type { ContentFormat, FormatPlan } from './contentFormat'
 import type { BrainstormIdea } from './brainstorm'
@@ -46,6 +47,8 @@ export interface StudioApi {
     duplicate(id: string): Promise<ProjectSummary>
   }
   story: {
+    publication(projectId: string): Promise<PublicationMetadata>
+    exportPublication(projectId: string): Promise<string | null>
     planContent(synopsis: string, format: ContentFormat, language: string): Promise<FormatPlan>
     brainstorm(category: string, language: string, direction?: string, previous?: string[], format?: ContentFormat): Promise<BrainstormIdea[]>
     reviewScript(projectId: string): Promise<ScriptAssessment>
@@ -77,6 +80,7 @@ export interface StudioApi {
     /** Runs script, visual plans, pictures, voice and captions one after another, waiting for each step. */
     pipeline(projectId: string): Promise<ProjectBundle>
     clipVideo(clipId: string): Promise<Job>
+    recoverFlowVideo(clipId: string): Promise<Job>
     clipTts(clipId: string): Promise<Job>
     characterSheet(characterId: string): Promise<Job>
     /** Every picture the project still needs; with 'all' every picture is drawn again, e.g. after a style change. */

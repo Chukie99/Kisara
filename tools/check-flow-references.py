@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
   c=p.chromium.launch_persistent_context(profile,executable_path=str(exe),headless=True,args=['--disable-extensions-except='+str(ext),'--load-extension='+str(ext)])
   try:
    c.route('https://flow.google.com/**',lambda r:r.fulfill(status=200,content_type='text/html',body=html))
+   c.route('https://lh3.googleusercontent.com/**',lambda r:r.fulfill(status=200,content_type='image/png',body=other_png if r.request.url.endswith('existing.png') else png))
    c.route('https://media.example.test/**',lambda r:r.fulfill(status=200,content_type='image/png',body=other_png if r.request.url.endswith('existing.png') else portrait_png if globals().get('aspect',globals().get('chosen'))=='9:16' else png))
    w=c.service_workers[0] if c.service_workers else c.wait_for_event('serviceworker',timeout=15000)
    w.evaluate("async()=>await chrome.storage.local.set({apiKey:'synthetic-key',serverUrl:'ws://127.0.0.1:18774/captcha_ws',routeKey:'fixture'})")
@@ -39,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
     raise AssertionError('worker did not answer')
    import base64
    reference='data:image/png;base64,'+base64.b64encode(png).decode()
-   for mode in ['reference','library_reference','video','portrait_video','missing_controls_video','wrong_frame_video','changed_frame_video','upload_failure','existing_attachment','reuse_attachment']:
+   for mode in ['reference','auto_model','replaced_model','missing_model','settings_open','delayed_start','delayed_save','delayed_upload_editor','library_reference','library_reuse','library_instant','library_dom','library_multi_cached','library_multi_upload','busy_then_idle','video','portrait_video','missing_controls_video','wrong_frame_video','changed_frame_video','upload_failure','existing_attachment','reuse_attachment','google_reference','wrong_google_reference','library_delayed_chip']:
     page.goto('https://flow.google.com/project/fixture');page.wait_for_load_state('networkidle')
     page.evaluate("""mode=>{
       document.querySelector('input[type=file]').onchange=e=>{window.uploaded=Array.from(e.target.files).map(f=>({name:f.name,type:f.type,size:f.size}));if(mode==='upload_failure')return;if(mode==='library_reference'){const file=e.target.files[0],pick=document.createElement('button'),add=document.createElement('button');pick.textContent=file.name+'Gambar';add.textContent='Tambahkan ke perintah';add.disabled=true;pick.onclick=ev=>{if(ev.isTrusted)add.disabled=false};add.onclick=ev=>{if(!ev.isTrusted)return;const img=document.createElement('img');img.src=URL.createObjectURL(file);document.querySelector('#composer').append(img);pick.remove();add.remove()};document.body.append(pick,add);return;}for(const f of e.target.files){const img=document.createElement('img');img.src=URL.createObjectURL(f);document.querySelector('#composer').append(img)}};
@@ -60,24 +61,60 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
     if mode=='missing_controls_video':page.locator('#start-frame').evaluate('(e)=>e.remove()');page.locator('#composer button').filter(has_text='Veo 3.1').evaluate('(e)=>e.remove()')
     if mode=='wrong_frame_video':page.locator('#start-frame').evaluate("e=>{const img=new Image();img.src='https://media.example.test/existing.png';e.append(img)}");page.wait_for_timeout(400)
     if mode=='changed_frame_video':page.locator('[contenteditable=true]').evaluate("e=>e.addEventListener('input',()=>document.querySelector('#start-frame img')?.remove())")
+    if mode in ['auto_model','replaced_model','missing_model']:
+     page.evaluate("""mode=>{const model=document.querySelector('[aria-label="Model default pembuatan gambar"]');model.textContent='Nano Banana Pro';model.onclick=()=>{const option=document.createElement('button');option.setAttribute('role',mode==='auto_model'?'option':'menuitem');option.textContent=mode==='missing_model'?'Nano Banana 2 Lite':'Nano Banana 2.1';option.onclick=()=>{window.modelSelections=(window.modelSelections||0)+1;if(mode==='replaced_model'){const copy=model.cloneNode();copy.textContent='Nano Banana 2.1';model.replaceWith(copy)}else model.textContent='Nano Banana 2.1';option.remove()};document.body.append(option)}}""",mode)
+    if mode=='settings_open':
+     page.evaluate("""()=>{const editor=document.querySelector('[contenteditable=true]');editor.remove();const pane=document.querySelector('flow-settings-view');pane.hidden=false;[...pane.querySelectorAll('button')].find(e=>e.textContent==='Simpan').onclick=()=>{pane.hidden=true;document.querySelector('#composer').append(editor)}}""")
+    if mode=='delayed_start':page.evaluate("()=>{const editor=document.querySelector('[contenteditable=true]');editor.remove();setTimeout(()=>document.querySelector('#composer').append(editor),1800)}")
+    if mode=='delayed_save':page.evaluate("()=>{const pane=document.querySelector('flow-settings-view');[...pane.querySelectorAll('button')].find(e=>e.textContent==='Simpan').onclick=()=>{pane.hidden=true;const editor=document.querySelector('[contenteditable=true]');editor.remove();setTimeout(()=>document.querySelector('#composer').append(editor),1800)}}")
+    if mode=='delayed_upload_editor':page.evaluate("()=>{const input=document.querySelector('input[type=file]'),old=input.onchange;input.onchange=e=>{old(e);const editor=document.querySelector('[contenteditable=true]');editor.remove();setTimeout(()=>document.querySelector('#composer').append(editor),1800)}}")
+    if mode in ['library_reuse','library_instant','library_dom']:
+     import hashlib
+     filename='kisara-'+hashlib.sha256(png).hexdigest()[:16]+'-reference-1.png'
+     page.evaluate("""({name,instant,dom})=>{window.uploaded=[];const toggle=document.createElement('button');toggle.textContent='add';toggle.setAttribute('aria-label','Tambahkan bahan ke kotak perintah');toggle.onclick=()=>{toggle.textContent=toggle.textContent==='add'?'close':'add';if(toggle.textContent!=='close')return;const pick=document.createElement('button'),add=document.createElement('button');pick.textContent=name+'Gambar';add.textContent='Tambahkan ke perintah';add.disabled=true;pick.onclick=ev=>{if(ev.isTrusted||dom){add.disabled=false;if(instant){const img=new Image();img.src='https://media.example.test/matched.png';document.querySelector('#composer').append(img);pick.remove();add.remove();toggle.textContent='add'}}};add.onclick=ev=>{if(!ev.isTrusted)return;const img=new Image();img.src='https://media.example.test/matched.png';document.querySelector('#composer').append(img);pick.remove();add.remove();toggle.textContent='add'};document.body.append(pick,add)};document.querySelector('#composer').append(toggle)}""",{'name':filename,'instant':mode in ['library_instant','library_dom'],'dom':mode=='library_dom'})
+    if mode=='library_delayed_chip':
+     import hashlib
+     name='kisara-'+hashlib.sha256(png).hexdigest()[:16]+'-reference-1.png'
+     page.evaluate("""name=>{window.uploaded=[];const toggle=document.createElement('button');toggle.textContent='add';toggle.setAttribute('aria-label','Tambahkan bahan ke kotak perintah');toggle.onclick=()=>{toggle.textContent='close';const card=document.createElement('button');card.textContent=name+'Gambar';card.onclick=()=>{card.remove();setTimeout(()=>{const img=new Image();img.src='https://media.example.test/matched.png';document.querySelector('#composer').append(img);toggle.textContent='add'},500)};document.body.append(card)};document.querySelector('#composer').append(toggle);const unrelated=document.createElement('button');unrelated.textContent='Tambahkan ke perintah';unrelated.onclick=()=>{window.wrongConfirm=(window.wrongConfirm||0)+1;const img=new Image();img.src='https://media.example.test/existing.png';document.querySelector('#composer').append(img)};document.body.append(unrelated)}""",name)
+    if mode in ['library_multi_cached','library_multi_upload']:
+     import hashlib
+     names=['kisara-'+hashlib.sha256(png).hexdigest()[:16]+'-reference-'+str(i)+'.png' for i in [1,2]]
+     page.evaluate("""({names,cached})=>{window.uploaded=[];window.available=cached;const toggle=document.createElement('button');toggle.textContent='add';toggle.setAttribute('aria-label','Tambahkan bahan ke kotak perintah');const close=()=>{document.querySelectorAll('[data-card]').forEach(e=>e.remove());toggle.textContent='add'};toggle.onclick=()=>{if(toggle.textContent==='close'){close();return}toggle.textContent='close';if(!window.available)return;for(const name of names){const b=document.createElement('button');b.dataset.card='true';b.textContent=name+'Gambar';b.onclick=()=>{const img=new Image();img.src='https://media.example.test/matched.png';document.querySelector('#composer').append(img);close()};document.body.append(b)}};document.querySelector('#composer').append(toggle);document.querySelector('input[type=file]').onchange=e=>{window.uploaded=Array.from(e.target.files).map(f=>({size:f.size}));window.available=true}}""",{'names':names,'cached':mode=='library_multi_cached'})
+    if mode=='busy_then_idle':page.evaluate("()=>{const pending=document.createElement('flow-pending-tile');pending.style.cssText='display:block;width:20px;height:20px';document.body.append(pending);setTimeout(()=>pending.remove(),1800)}")
+    if mode in ['google_reference','wrong_google_reference']:
+     page.evaluate("mode=>{const img=new Image();img.src='https://lh3.googleusercontent.com/'+(mode==='wrong_google_reference'?'existing':'matched')+'.png';document.querySelector('#composer').append(img)}",mode)
+     page.wait_for_timeout(400)
+     w.evaluate("""async()=>{const tabs=await chrome.tabs.query({url:'https://flow.google.com/project/*'});await chrome.scripting.executeScript({target:{tabId:tabs[0].id},world:'ISOLATED',func:()=>{const old=globalThis.fetch;globalThis.fetch=(url,...args)=>String(url).startsWith('https://lh3.googleusercontent.com/')?Promise.reject(new TypeError('Synthetic page CORS denial')):old(url,...args)}})}""")
     if mode in ['existing_attachment','reuse_attachment']:page.wait_for_timeout(400)
     video='video' in mode
     aspect='9:16' if mode=='portrait_video' else '16:9'
-    result=request('generate_frames_video' if video else 'generate_reference_image',prompt='Kenzo saves money.',aspect=aspect,references=[reference])
-    expected={'upload_failure':'reference_upload_failed','existing_attachment':'existing_attachments','missing_controls_video':'frames_mode_unavailable','wrong_frame_video':'existing_attachments','changed_frame_video':'submit_not_ready'}.get(mode)
+    result=request('generate_frames_video' if video else 'generate_reference_image',prompt='Kenzo saves money.',aspect=aspect,references=[reference,reference] if mode.startswith('library_multi') else [reference])
+    expected={'missing_model':'image_model_not_verified','upload_failure':'reference_upload_failed','existing_attachment':'existing_attachments','missing_controls_video':'frames_mode_unavailable','wrong_frame_video':'existing_attachments','changed_frame_video':'submit_not_ready','wrong_google_reference':'existing_attachments'}.get(mode)
     if expected:
      assert result['inspection']['failure']['code']==expected,result
      assert page.evaluate('window.submits||0')==0
     else:
      assert result['inspection']['mediaUrl']=='https://media.example.test/result.'+('mp4' if video else 'png'),result
      assert page.evaluate('window.submits')==1
-     if mode!='reuse_attachment':assert page.evaluate('window.uploaded[0].size')==len(png)
+     if mode in ['auto_model','replaced_model']:assert page.evaluate('window.modelSelections')==1
+     if mode not in ['library_delayed_chip','google_reference','reuse_attachment','library_reuse','library_instant','library_dom','library_multi_cached']:assert page.evaluate('window.uploaded[0].size')==len(png)
+     if mode in ['library_reuse','library_instant','library_dom','library_multi_cached']:assert page.evaluate('window.uploaded.length')==0
      if video:
       assert page.locator('#start-frame img').count()==1
       assert page.locator('#video-options [aria-checked=true]').all_text_contents()==[aspect,'x1']
      else:
       assert page.locator('mat-button-toggle-group').nth(0).locator('[aria-checked=true]').inner_text()==aspect
       assert page.locator('mat-button-toggle-group').nth(1).locator('[aria-checked=true]').inner_text()=='x1'
+    if mode=='library_delayed_chip':assert page.evaluate('window.wrongConfirm||0')==0
+    if mode.startswith('library_multi'):assert page.locator('#composer img').count()==2
     print('PASS reference/video worker:',mode)
+   for count in [0,1,2]:
+    page.goto('https://flow.google.com/project/fixture');page.wait_for_load_state('networkidle')
+    page.evaluate("count=>{window.kisaraFlowRecover=()=>{throw Error('Must not use an old collector')};for(let i=0;i<count;i++){const v=document.createElement('video');v.style.cssText='display:block;width:200px;height:200px';v.src='https://media.example.test/selected'+i+'.mp4';document.body.append(v)}}",count)
+    result=request('recover_selected_video')
+    if count==1:assert result['inspection']['mediaUrl']=='https://media.example.test/selected0.mp4',result
+    else:assert result['inspection']['failure']['code']=='multiple_outputs',result
+    assert page.evaluate('window.submits||0')==0
+    print('PASS selected video recovery: players='+str(count)+', no Generate')
    print('REFERENCE + I2V PASS: actual extension, actual file attachment, image/video results distinguished, both aspects, missing attachment refuses submit. Synthetic Flow only.')
   finally:c.close()

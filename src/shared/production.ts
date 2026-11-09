@@ -25,10 +25,11 @@ export interface MediaImportPlan {
 }
 export interface MediaImportChoice { fileId: string; clipId: string | null }
 export interface FlowSetup {
+  browserBatchVersion?: number
   browserFramesVersion?: number
   browserMediaVersion?: number
   generationPause?: { code: 'unusual_activity' | 'uncertain_result'; pausedAt: number; retryAllowed?: boolean }
-  accounts: { id: number; email: string; routeKey: string; workerConnected: boolean; active: boolean; imageEnabled: boolean }[]
+  accounts: { id: number; email: string; routeKey: string; workerConnected: boolean; active: boolean; imageEnabled: boolean; quotaExhausted?: boolean }[]
   workers: { routeKey: string; label: string }[]
   extensionMode: boolean
 }
@@ -42,6 +43,7 @@ export interface FlowProfile {
 }
 
 export interface FlowBrowserInspection {
+  composer?: { editors: number; draftLength: number; submitCount: number; submitDisabled: boolean; busy: boolean; online: boolean }
   host: string
   projectOpen: boolean
   blocked: boolean

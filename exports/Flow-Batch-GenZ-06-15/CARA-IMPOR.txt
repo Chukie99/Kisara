@@ -1,0 +1,14 @@
+HASIL UJI BATCH FLOW - ADEGAN 06 SAMPAI 15
+
+Proyek: Kenapa Gen Z Sulit Beli Rumah: Kopi atau Biaya Hidup?
+Sepuluh gambar dibuat dari satu kiriman pada akun Flow Acek.
+Nomor pada nama file adalah nomor adegan proyek, bukan urutan unduhan.
+
+Cara pakai:
+1. Buka proyek tersebut di Kisara, langkah Visual & suara.
+2. Klik Impor hasil Flow.
+3. Pilih hanya sepuluh file JPG bernomor 06 sampai 15 dalam folder ini.
+4. Periksa pasangan adegan 06-15 pada pratinjau, lalu impor.
+Lima gambar sebelumnya tidak perlu diganti.
+
+Gambar hasil uji belum dipasang pada proyek produksi. Database produksi hanya dibaca.

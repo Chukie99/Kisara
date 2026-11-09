@@ -20,6 +20,7 @@ import type {
 } from '@shared/types'
 import { defaultVoiceFor } from '@shared/models'
 import { visualSourceOf } from '@shared/script'
+import { canDivideVisual, visualShotParts } from '@shared/visualShots'
 import { charactersMentioned, resolveCharacter, sceneCharacters } from '@shared/characters'
 import { getDb } from './db'
 import { assetUrl, projectDir, projectsRoot } from './paths'
@@ -514,6 +515,47 @@ export interface SceneVisual {
   motionStrength: Clip['motionStrength']
   videoPrompt: string
   transition: Clip['transition']
+}
+
+/** Subdivide only unproduced passages, before a prompt or an asset has been approved. */
+export function divideUnproducedShots(projectId: string): number {
+  const bundle = getBundle(projectId)
+  if (bundle.jobs.some(j => j.status === 'running' || j.status === 'queued')) return 0
+  const anchored = new Set([
+    ...(bundle.project.editor.soundPlan ?? []).map(c => c.clipId),
+    ...(bundle.project.editor.sfx ?? []).map(fx => fx.clipId)
+  ])
+  let added = 0
+  getDb().transaction(() => {
+    for (const [index, clip] of bundle.clips.entries()) {
+      if (!canDivideVisual(clip) || clip.visualPrompt.trim() || anchored.has(clip.id)) continue
+      const parts = visualShotParts(clip.narration, clip.durationMs, bundle.project.language, index === 0)
+      if (parts.length < 2) continue
+      const context = clip.story
+      let previousId = clip.id
+      for (const [partIndex, part] of parts.entries()) {
+        const shot: Clip = {
+          ...clip, id: partIndex === 0 ? clip.id : randomUUID(),
+          title: `${clip.title} · shot ${partIndex + 1}/${parts.length}`,
+          story: `Konteks adegan: ${context}\nFokus shot ini: ${part.narration.trim()}`,
+          narration: part.narration, durationMs: part.durationMs,
+          visualPrompt: '', visualSource: null, videoPrompt: '',
+          transition: partIndex === parts.length - 1 ? clip.transition : 'cut'
+        }
+        if (partIndex === 0) {
+          patchClipText(clip.id, { title: shot.title, story: shot.story, narration: shot.narration, visualSource: null, transition: shot.transition })
+          patchClip(clip.id, { durationMs: shot.durationMs, videoPrompt: '' })
+        } else {
+          insertClipAfter(previousId, shot)
+          added++
+        }
+        previousId = shot.id
+      }
+    }
+    if (added) touchProject(projectId)
+  })()
+  if (added) emit.production(getBundle(projectId))
+  return added
 }
 
 export function applyScriptRefinement(projectId: string, scenes: { id: string; title: string; story: string; narration: string }[]): void {

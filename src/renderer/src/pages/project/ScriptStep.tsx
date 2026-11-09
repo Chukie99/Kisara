@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowRight, ArrowUp, Bot, Copy, Download, MoreHorizontal, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { DURATIONS, TTS_WORDS_PER_SECOND, llmName } from '@shared/models'
 import { estimateNarrationMs, needsVisual, wordCount } from '@shared/script'
-import { VOICE_TAGS, VOICE_DELIVERIES, narrationSpeed, stripVoiceTags } from '@shared/speech'
+import { canDivideVisual, visualShotParts } from '@shared/visualShots'
+import { effectiveDelivery, VOICE_TAGS, VOICE_DELIVERIES, narrationSpeed, stripVoiceTags } from '@shared/speech'
 import type { Clip, LlmProvider, ScriptProgress } from '@shared/types'
 import { AutoTextarea } from '../../components/AutoTextarea'
 import { Select } from '../../components/Select'
@@ -228,7 +229,10 @@ export function ScriptStep() {
   if (!project) return null
 
   const insert = (afterId: string | null): void => { setScriptView('scenes'); setFocusId(addClip(afterId)) }
+  const scriptRepairNeeded = !!visualProgress?.visualIssues?.some(issue => issue.kind === 'script')
   const totalMs = clips.reduce((n, c) => n + c.durationMs, 0)
+  const extraShots = clips.reduce((sum, clip, index) => sum + (canDivideVisual(clip) && !clip.visualPrompt.trim()
+    ? visualShotParts(clip.narration, clip.durationMs, project?.language ?? 'id', index === 0).length - 1 : 0), 0)
   const spans = sceneSpans(clips)
   const planned = clips.some((c) => c.visualPrompt.trim())
   const stale = clips.filter(needsVisual).length
@@ -286,6 +290,7 @@ export function ScriptStep() {
       const bundle = await window.api.story.refineScript(project.id)
       if (useProject.getState().project?.id !== project.id) return
       load(bundle)
+      setVisualProgress(null)
       toast('success', 'Naskah dan dialog diperbarui. Tinjau hasilnya, lalu buat ulang visual dan suara yang berubah.')
     } catch (e) { if (useProject.getState().project?.id === project.id) setRefineError(errorText(e)) }
     finally { setRefining(false) }
@@ -337,7 +342,7 @@ export function ScriptStep() {
             </div>
           )}
 
-          <ScriptReviewPanel onScene={id => { setScriptView('scenes'); setFocusId(id) }} />
+          <ScriptReviewPanel onRepair={() => void refine()} repairing={refining} onScene={id => { setScriptView('scenes'); setFocusId(id) }} />
           <nav aria-label="Bagian naskah" className="flex flex-wrap gap-2">{([{id:'read',label:'Baca naskah'},{id:'scenes',label:'Edit per adegan'},{id:'flow',label:'Prompt Google Flow'}] as const).map(tab => <Button key={tab.id} variant={scriptView === tab.id ? 'accent' : 'secondary'} aria-pressed={scriptView === tab.id} onClick={() => setScriptView(tab.id)}>{tab.label}</Button>)}</nav>
           {scriptView === 'read' && <section aria-label="Narasi lengkap" className="rounded-xl border border-line bg-surface p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2"><h2 className="mr-auto text-lg font-semibold">Narasi lengkap</h2>
@@ -347,7 +352,7 @@ export function ScriptStep() {
             <div className="flex flex-col gap-5">{clips.map((clip,i) => <div key={clip.id}><p className="mb-1 font-mono text-xs text-muted">{String(i+1).padStart(3,'0')} · {spans[i].timestamp}</p><p className="whitespace-pre-wrap text-[16px] leading-8">{stripVoiceTags(clip.narration).trim()}</p></div>)}</div>
           </section>}
           <div hidden={scriptView !== 'flow'}>
-          <FlowPanel busy={!!busy || refining} progress={visualProgress} onPrepare={() => void makeVisuals('missing')} />          </div>
+          <FlowPanel onRepairScript={() => void refine()} onReviewScene={id => { setScriptView('scenes'); setFocusId(id) }} busy={!!busy || refining} progress={visualProgress} onPrepare={() => void makeVisuals('missing')} />          </div>
           <div hidden={scriptView !== 'scenes'}>
           <div className="flex flex-col">
             {clips.map((c, i) => (
@@ -384,7 +389,7 @@ export function ScriptStep() {
                 ]} />
                 <p className="max-w-[280px] text-xs text-muted">Nada suara tetap. Setelah mengubah tempo, buat ulang narasi agar durasi dan caption ikut menyesuaikan.</p>
               </div>
-            ) : <Select label="Pembawaan narator" value={project.editor.voiceDelivery ?? 'dramatic'} onChange={(voiceDelivery) => updateEditor({ voiceDelivery })} options={VOICE_DELIVERIES.map((d) => ({ value: d.id, label: d.label }))} />}
+            ) : <Select label="Pembawaan narator" value={effectiveDelivery(project)} onChange={(voiceDelivery) => updateEditor({ voiceDelivery })} options={VOICE_DELIVERIES.map((d) => ({ value: d.id, label: d.label }))} />}
           </div>
 
           </div></details>
@@ -395,6 +400,7 @@ export function ScriptStep() {
         <div className="flex flex-col gap-0.5">
           <span className="text-[15px] font-semibold">
             {clips.length} adegan · ± {mmss(totalMs)}
+            {extraShots > 0 && <span className="ml-2 text-xs font-normal text-accent-dark">± {extraShots} shot tambahan saat susun visual</span>}
           </span>
           <span className="flex items-center gap-1.5 text-[13px] text-muted">
             <Bot className="size-3.5" />
@@ -410,8 +416,8 @@ export function ScriptStep() {
           Kembali ke ide
         </Button>
         {!planned ? (
-          <Button variant="primary" size="lg" className="h-[50px]" loading={busy === 'missing'} icon={!busy && <Sparkles className="size-[18px]" />} onClick={() => void makeVisuals('missing')}>
-            Susun prompt visual
+          <Button variant="primary" size="lg" className="h-[50px]" loading={refining || busy === 'missing'} icon={!busy && !refining && <Sparkles className="size-[18px]" />} onClick={() => void (scriptRepairNeeded ? refine() : makeVisuals('missing'))}>
+            {scriptRepairNeeded ? 'Perbaiki temuan naskah' : 'Susun prompt visual'}
           </Button>
         ) : stale > 0 ? (
           <>

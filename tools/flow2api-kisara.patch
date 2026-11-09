@@ -1,5 +1,5 @@
 diff --git a/extension/background.js b/extension/background.js
-index 517e3f6..369ba60 100644
+index 517e3f6..50914c4 100644
 --- a/extension/background.js
 +++ b/extension/background.js
 @@ -1,9 +1,11 @@
@@ -76,7 +76,7 @@ index 517e3f6..369ba60 100644
          let data;
          try {
              data = JSON.parse(event.data);
-@@ -114,10 +135,106 @@ async function connectWS() {
+@@ -114,10 +135,175 @@ async function connectWS() {
          }
  
          if (data.type === "register_ack") {
@@ -85,6 +85,51 @@ index 517e3f6..369ba60 100644
              return;
          }
  
++        if(data.type==='generate_image_batch'){
++            let submitted=false;
++            try{
++                const tasks=data.tasks,tabs=await chrome.tabs.query({url:'https://flow.google.com/project/*'});
++                if(tabs.length!==1||!Array.isArray(tasks)||!tasks.length||tasks.length>10||new Set(tasks.map(t=>t.id)).size!==tasks.length)throw new Error('browser_not_ready');
++                if(tasks.some(t=>t.aspect!==tasks[0].aspect))throw new Error('unsupported_input');
++                const references=[...new Set(tasks.flatMap(t=>t.references||[]))];if(references.length>3)throw new Error('unsupported_input');
++                const target={tabId:tabs[0].id};
++                await chrome.scripting.executeScript({target,world:'ISOLATED',files:['browser-ui.js']});
++                const state=(await chrome.scripting.executeScript({target,world:'ISOLATED',func:async()=>await globalThis.kisaraFlowUI({action:'inspect'})}))[0]?.result;
++                if(state?.failure)throw new Error(state.failure.code);if(state?.composer?.busy)throw new Error('browser_busy');
++                let prefix=tasks[0].prompt;for(const task of tasks){let i=0;while(i<prefix.length&&prefix[i]===task.prompt[i])i++;prefix=prefix.slice(0,i)}
++                prefix=prefix.slice(0,prefix.lastIndexOf('\n')+1);
++                const prompt='Create exactly '+tasks.length+' SEPARATE scene images, one image per scene below. Do not make a collage or contact sheet. Follow the supplied reference identity and style in every scene. Before each image in your chat reply, write its exact label KISARA_CLIP_<id> as plain text immediately next to that image. Never write these labels inside the images. Each label must occur exactly once. No extra image variants.\n\nGLOBAL INSTRUCTIONS:\n'+prefix+'\n\nSCENES:\n'+tasks.map(t=>'KISARA_CLIP_'+t.id+'\n'+t.prompt.slice(prefix.length)).join('\n\n');
++                let result=await batchNativeSubmit(target,{prompt,aspect:tasks[0].aspect,references,action:references.length?'generate_reference_image':'generate_image',batchKey:data.req_id,batchSceneIds:tasks.map(t=>t.id),nativeSubmit:true});
++                if(result?.batchAccepted===data.req_id){
++                    submitted=true;
++                    result=(await chrome.scripting.executeScript({target,world:'ISOLATED',func:async key=>{const f=globalThis.kisaraFlowBatchCollectors?.get(key);try{return f?await f():{failure:{code:'result_uncertain',submitted:true}}}finally{globalThis.kisaraFlowBatchCollectors?.delete(key)}},args:[data.req_id]}))[0]?.result;
++                }else submitted=result?.failure?.submitted===true;
++                const images=result?.batchImages||[],ids=new Set();
++                for(const image of images){if(!tasks.some(t=>t.id===image.id)||ids.has(image.id))throw new Error('result_uncertain');ids.add(image.id)}
++                const failure=result?.batchFailure||result?.preSubmitError||result?.failure?.code||'batch_mapping_uncertain';
++                const results=[];
++                for(const task of tasks){
++                    const image=images.find(v=>v.id===task.id);
++                    if(!image){results.push({id:task.id,error:failure,submitted});continue}
++                    let url=image.mediaUrl;
++                    if(url?.startsWith('data:')){
++                        const cfg=await chrome.storage.local.get(['apiKey','serverUrl']),base=new URL(cfg.serverUrl||'ws://127.0.0.1:8765/captcha_ws');
++                        if(!['127.0.0.1','localhost','[::1]'].includes(base.hostname)||!['ws:','http:'].includes(base.protocol))throw new Error('media_download_failed');
++                        base.protocol='http:';base.pathname='/api/kisara/browser/media/'+encodeURIComponent(data.req_id+'.'+task.id);base.search='';base.hash='';
++                        const blob=await(await fetch(url)).blob();if(!blob.type.startsWith('image/')||blob.size>20*1024*1024)throw new Error('media_download_failed');
++                        const upload=await fetch(base.href,{method:'PUT',headers:{Authorization:'Bearer '+cfg.apiKey,'Content-Type':blob.type},body:blob,signal:AbortSignal.timeout(60000)});if(!upload.ok)throw new Error('media_download_failed');url=base.pathname;
++                    }
++                    results.push({id:task.id,mediaUrl:url,submitted:true});
++                }
++                if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({req_id:data.req_id,status:'success',batchResults:results}));
++            }catch(error){
++                const code=['google_blocked','browser_busy','browser_not_ready','unsupported_input'].includes(error.message)?error.message:'result_uncertain';
++                if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({req_id:data.req_id,status:'success',batchResults:data.tasks.map(t=>({id:t.id,error:code,submitted}))}));
++            }
++            return;
++        }
++
++        if(data.type==='inspect_flow_ui'&&data.action==='batch_capability'){if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({req_id:data.req_id,status:'success',inspection:{batchVersion:1}}));return;}
 +        if (data.type === 'inspect_flow_ui') {
 +            try {
 +                const tabs = await chrome.tabs.query({ url: 'https://flow.google.com/project/*' });
@@ -105,6 +150,7 @@ index 517e3f6..369ba60 100644
 +                        const points=await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>globalThis.kisaraFlowControlPoint?.()});
 +                        const point=points[0]?.result;
 +                        if (Number.isFinite(point?.x)&&Number.isFinite(point?.y)) {
++                            await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mouseMoved',x:point.x,y:point.y,button:'none',buttons:0});
 +                            await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mousePressed',x:point.x,y:point.y,button:'left',buttons:1,clickCount:1});
 +                            await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mouseReleased',x:point.x,y:point.y,button:'left',buttons:0,clickCount:1});
 +                            ok=true;
@@ -139,6 +185,29 @@ index 517e3f6..369ba60 100644
 +                    } finally {
 +                        if (attached) await chrome.debugger.detach(target).catch(() => {});
 +                    }
++                }
++                if(inspection?.canvasDownload){
++                    // Observe only the download started by the visible original-size menu action.
++                    const started=Date.now(),ids=new Set();
++                    let listener;
++                    const found=new Promise((resolve,reject)=>{
++                        const timer=setTimeout(()=>{chrome.downloads.onCreated.removeListener(listener);reject(new Error('media_download_failed'))},30000);
++                        listener=item=>{
++                            try {const u=new URL(item.finalUrl||item.url);if(u.protocol!=='blob:'||!u.href.startsWith('blob:https://flow.google.com/'))return;}catch{return;}
++                            ids.add(item.id);clearTimeout(timer);resolve(item.id);
++                        };
++                        chrome.downloads.onCreated.addListener(listener);
++                    });
++                    // Prevent a rejected observer promise becoming unhandled while the UI action is pending.
++                    found.catch(()=>{});
++                    try{
++                        await chrome.scripting.executeScript({target:{tabId:tabs[0].id},world:'ISOLATED',func:async()=>await globalThis.kisaraFlowUI({action:'download_selected_video'})});
++                        const id=await found,deadline=Date.now()+60000;
++                        let item;
++                        do {const rows=await chrome.downloads.search({id});item=rows[0];if(item?.state==='complete')break;if(item?.state==='interrupted'||ids.size!==1)throw new Error('media_download_failed');await new Promise(r=>setTimeout(r,250));}while(Date.now()<deadline);
++                        if(item?.state!=='complete'||ids.size!==1||!item.filename?.toLowerCase().endsWith('.mp4')||item.fileSize<=0||item.fileSize>40*1024*1024)throw new Error('media_download_failed');
++                        inspection={downloadFile:{path:item.filename,size:item.fileSize,started}};
++                    }finally{chrome.downloads.onCreated.removeListener(listener);}
 +                }
 +                if (inspection?.browserMediaUrl) {
 +                    const source = new URL(inspection.browserMediaUrl);
@@ -183,7 +252,7 @@ index 517e3f6..369ba60 100644
          if (data.type === "get_token") {
              tokenQueue = tokenQueue.then(() => handleGetToken(data)).catch(err => {
                  console.error("[Flow2API] Queue Error:", err);
-@@ -126,15 +243,18 @@ async function connectWS() {
+@@ -126,15 +312,18 @@ async function connectWS() {
      };
  
      ws.onclose = () => {
@@ -204,14 +273,67 @@ index 517e3f6..369ba60 100644
      };
  }
  
-@@ -230,6 +350,18 @@ async function handleGetToken(data) {
+@@ -230,6 +419,71 @@ async function handleGetToken(data) {
      }
  }
  
++
++async function batchNativeSubmit(target,task){
++    await chrome.scripting.executeScript({target,world:'ISOLATED',files:['browser-ui.js']});
++    let prepared=false;
++    const work=chrome.scripting.executeScript({target,world:'ISOLATED',func:async task=>await globalThis.kisaraFlowUI(task),args:[task]});
++    work.then(()=>{prepared=true},()=>{prepared=true});
++    while(!prepared){
++        await new Promise(r=>setTimeout(r,100));
++        if(prepared)break;
++        const pending=await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>Boolean(globalThis.kisaraFlowControlPoint)});
++        if(!pending[0]?.result)continue;
++        let attached=false,ok=false;
++        try{
++            await chrome.debugger.attach(target,'1.3');attached=true;
++            const points=await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>globalThis.kisaraFlowControlPoint?.()});const p=points[0]?.result;
++            if(Number.isFinite(p?.x)&&Number.isFinite(p?.y)){await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mousePressed',x:p.x,y:p.y,button:'left',buttons:1,clickCount:1});await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mouseReleased',x:p.x,y:p.y,button:'left',buttons:0,clickCount:1});ok=true}
++        }catch{}finally{if(attached)await chrome.debugger.detach(target).catch(()=>{})}
++        await chrome.scripting.executeScript({target,world:'ISOLATED',func:ok=>globalThis.kisaraFlowControlDone?.(ok),args:[ok]});
++    }
++    const value=(await work)[0]?.result;if(!value?.nativeSubmit)return value;
++    let attached=false,attempted=false;
++    try{
++        await chrome.debugger.attach(target,'1.3');attached=true;
++        const rows=await chrome.scripting.executeScript({target,world:'ISOLATED',func:()=>globalThis.kisaraFlowNativePoint?.()}),p=rows[0]?.result;
++        if(p?.failure)return p;if(!Number.isFinite(p?.x)||!Number.isFinite(p?.y))return {failure:{code:'submit_not_ready',submitted:false}};
++        attempted=true;
++        await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mousePressed',x:p.x,y:p.y,button:'left',buttons:1,clickCount:1});
++        await chrome.debugger.sendCommand(target,'Input.dispatchMouseEvent',{type:'mouseReleased',x:p.x,y:p.y,button:'left',buttons:0,clickCount:1});
++        await chrome.debugger.detach(target);attached=false;
++        return (await chrome.scripting.executeScript({target,world:'ISOLATED',func:async()=>await globalThis.kisaraFlowCollect?.()}))[0]?.result;
++    }catch{return {failure:{code:attempted?'submit_unconfirmed':'native_input_unavailable',submitted:attempted}}}
++    finally{if(attached)await chrome.debugger.detach(target).catch(()=>{})}
++}
++
 +// Registered events wake an MV3 worker after Chrome/profile startup or suspension.
 +chrome.runtime.onStartup.addListener(() => { void connectWS(); });
 +chrome.runtime.onInstalled.addListener(() => { void connectWS(); });
 +chrome.runtime.onMessage.addListener((message, _sender, respond) => {
++    if(message?.type==='flow_reference_pixels'){
++        (async()=>{
++            const senderUrl=new URL(_sender.url||'');
++            if(_sender.id!==chrome.runtime.id||!_sender.tab?.id||senderUrl.origin!=='https://flow.google.com'||!senderUrl.pathname.startsWith('/project/'))throw new Error('reference_upload_failed');
++            const source=new URL(message.url);
++            if(source.protocol!=='https:'||source.hostname!=='lh3.googleusercontent.com'||source.username||source.password||source.port)throw new Error('reference_upload_failed');
++            const response=await fetch(source.href,{credentials:'omit',redirect:'error',signal:AbortSignal.timeout(10000)});
++            if(!response.ok||!response.headers.get('content-type')?.startsWith('image/'))throw new Error('reference_upload_failed');
++            const reader=response.body.getReader(),chunks=[];let size=0;
++            try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>8*1024*1024)throw new Error('reference_upload_failed');chunks.push(value)}}finally{await reader.cancel().catch(()=>{})}
++            const bitmap=await createImageBitmap(new Blob(chunks,{type:response.headers.get('content-type')}));
++            try{
++                if(bitmap.width>16000||bitmap.height>16000)throw new Error('reference_upload_failed');
++                const canvas=new OffscreenCanvas(64,64),ctx=canvas.getContext('2d');ctx.drawImage(bitmap,0,0,64,64);
++                return {ok:true,pixels:Array.from(ctx.getImageData(0,0,64,64).data)};
++            }finally{bitmap.close()}
++        })().then(respond).catch(()=>respond({ok:false}));
++        return true;
++    }
 +    if (message?.type !== 'flow_worker_connect') return;
 +    connectWS().then(() => respond({ connected: registered && ws?.readyState === WebSocket.OPEN }))
 +        .catch(() => respond({ connected: false }));
@@ -225,16 +347,70 @@ index 517e3f6..369ba60 100644
      if (changes.routeKey || changes.serverUrl || changes.apiKey || changes.clientLabel) {
 diff --git a/extension/browser-ui.js b/extension/browser-ui.js
 new file mode 100644
-index 0000000..af37a45
+index 0000000..1d0a00a
 --- /dev/null
 +++ b/extension/browser-ui.js
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,617 @@
 +// Operate visible controls in the extension's isolated world; never call private Google RPCs.
++// Map only a labelled response owned by this batch. Numbered Flow options are explicit indexes, not DOM order.
++globalThis.kisaraFlowBatchImages = (key,ids,aspect,expand=false) => {
++  if(typeof key!=='string'||!Array.isArray(ids)||!ids.length||ids.length>10||new Set(ids).size!==ids.length)return [];
++  const turns=[...document.querySelectorAll('flow-chat-bubble')],users=turns.filter(e=>e.querySelector('.user-bubble')&&(e.textContent||'').includes('[KISARA:'+key+']'));
++  if(users.length!==1)return [];
++  const roots=[];for(let i=turns.indexOf(users[0])+1;i<turns.length;i++){if(turns[i].querySelector('.user-bubble'))break;if(turns[i].querySelector('.agent-bubble'))roots.push(turns[i])}
++  const ratio=aspect==='9:16'?9/16:16/9,valid=e=>e.naturalWidth>=144&&e.naturalHeight>=144&&Math.abs(e.naturalWidth/e.naturalHeight-ratio)/ratio<.08&&!e.closest('flow-a2ui-video-option');
++  const labels=text=>(text||'').match(/KISARA_CLIP_[a-zA-Z0-9_-]+/g)||[];
++  const tokensIn=element=>{const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT),values=[];while(walker.nextNode())values.push(...labels(walker.currentNode.nodeValue));return values;};
++  const found=[];
++  for(const root of roots)for(const image of [...root.querySelectorAll('img')].filter(valid)){
++    for(let node=image.parentElement;node&&root.contains(node);node=node.parentElement){
++      const names=[...new Set(tokensIn(node))],pictures=[...node.querySelectorAll('img')].filter(valid);
++      if(names.length===1&&ids.includes(names[0].slice(12))&&pictures.length===1){found.push({id:names[0].slice(12),image});break}
++      if(node===root)break;
++    }
++  }
++  const unique=found.filter(r=>found.filter(v=>v.id===r.id).length===1&&found.filter(v=>v.image.currentSrc===r.image.currentSrc).length===1);
++  if(unique.length===ids.length)return unique;
++  if(roots.length!==1)return unique;
++  const root=roots[0],names=tokensIn(root.querySelector('.agent-bubble')).map(v=>v.slice(12));
++  if(names.length!==ids.length||new Set(names).size!==ids.length||names.some(v=>!ids.includes(v)))return unique;
++  const galleries=[...root.querySelectorAll('flow-a2ui-multiple-choice')].filter(e=>e.querySelector('flow-a2ui-image-option'));
++  if(galleries.length!==1)return unique;
++  const options=[...galleries[0].querySelectorAll('flow-a2ui-image-option img')];
++  if(options.length<ids.length&&expand){
++    const more=[...root.querySelectorAll('button')].filter(e=>/^(Lihat semua|View all)$/.test(e.textContent.trim())&&!e.disabled);
++    if(more.length===1)more[0].click();
++    return unique;
++  }
++  if(options.length!==ids.length||options.some(e=>!valid(e)))return unique;
++  const numbered=options.map(image=>({image,n:Number((image.alt.match(/^(?:Option|Opsi)\s+(\d+)$/i)||[])[1])}));
++  if(numbered.some(v=>!Number.isInteger(v.n)||v.n<1||v.n>ids.length)||new Set(numbered.map(v=>v.n)).size!==ids.length)return unique;
++  if(new Set(options.map(e=>e.currentSrc||e.src)).size!==ids.length)return unique;
++  return numbered.map(v=>({id:names[v.n-1],image:v.image}));
++};
++
 +globalThis.kisaraFlowUI = (() => { let phase = 'inspect', clicked = false; const run = async function (task) {
 +  const visible = e => !!(e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && (!e.checkVisibility || e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) && !e.closest('[aria-hidden="true"],[inert]'));
++  const referencePixels = async url => {
++    try {
++      const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
++      if(!r.ok)throw new Error('reference_upload_failed');
++      const bitmap=await createImageBitmap(await r.blob()),canvas=new OffscreenCanvas(64,64),ctx=canvas.getContext('2d');
++      ctx.drawImage(bitmap,0,0,64,64);bitmap.close();return ctx.getImageData(0,0,64,64).data;
++    } catch {
++      // Loaded Google thumbnails can be visible while page-world CORS denies fetching them.
++      // The extension reads only the allowed image host, then returns pixels, never credentials.
++      let source;try{source=new URL(url)}catch{throw new Error('reference_upload_failed')}
++      if(source.protocol!=='https:'||source.hostname!=='lh3.googleusercontent.com')throw new Error('reference_upload_failed');
++      const result=await chrome.runtime.sendMessage({type:'flow_reference_pixels',url:source.href});
++      if(!result?.ok||!Array.isArray(result.pixels)||result.pixels.length!==64*64*4)throw new Error('reference_upload_failed');
++      return result.pixels;
++    }
++  };
 +  const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 160);
 +  const buttons = () => [...document.querySelectorAll('button,[role="button"]')].filter(visible);
-+  const blocked = () => [...document.querySelectorAll('[role="alert"],[role="dialog"]')].filter(visible).some(e => /unusual activity|aktivitas tidak biasa|captcha|verify you|verifikasi|access denied|akses ditolak/i.test(e.textContent || ''));
++  const blocked = () => [...document.querySelectorAll('[role="alert"],[role="dialog"],flow-chat-error-card,.chat-error-card')].filter(visible).some(e => /unusual activity|aktivitas(?: yang)? tidak biasa|captcha|verify you|verifikasi|access denied|akses ditolak/i.test(e.textContent || ''));
++  const quotaNotice = () => [...document.querySelectorAll('[role="alert"],[role="dialog"],flow-permission-message,flow-credit-banner,.credit-banner-error')].filter(visible).some(e => /insufficient credits|not enough (?:AI )?credits|(?:daily |image |generation )?quota (?:exceeded|exhausted)|kredit (?:AI )?tidak cukup|kredit (?:Google Flow )?(?:Anda )?habis|(?:you(?:'ve| have) )?run out of (?:Google Flow |AI )?credits|out of (?:Google Flow |AI )?credits|kuota (?:harian )?(?:habis|terlampaui)/i.test(e.textContent || ''));
 +  const editors = () => [...document.querySelectorAll('[contenteditable="true"][role="textbox"]')].filter(visible);
 +  const submitButtons = () => buttons().filter(e => /^(Mulai pembuatan|Start generation|Generate|Generate video|Buat video)$/.test(e.getAttribute('aria-label') || ''));
 +  const disabled = e => !e || e.disabled || e.matches(':disabled') || e.getAttribute('aria-disabled') === 'true' || !!e.closest('[inert]');
@@ -254,14 +430,37 @@ index 0000000..af37a45
 +    });
 +  };
 +  const busy = () => [...document.querySelectorAll('flow-stop-icon-button, flow-pending-tile')].some(visible);
++  const waitForIdle = async (settle = 1200) => {
++    const deadline=Date.now()+30000;
++    let idleSince=0;
++    while(Date.now()<deadline){
++      if(blocked())throw new Error('google_blocked');
++      if(busy())idleSince=0;
++      else { if(!idleSince)idleSince=Date.now();if(Date.now()-idleSince>=settle)return; }
++      await new Promise(r=>setTimeout(r,150));
++    }
++    throw new Error('browser_busy');
++  };
 +  const snapshot = () => ({ pending: [...document.querySelectorAll('flow-stop-icon-button,flow-pending-tile')].filter(visible).map(e=>({tag:e.tagName,parent:e.parentElement.tagName,text:clean(e.textContent)})), uploads: { inputs: [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple,parent:e.parentElement.tagName})), ancestry: editors().flatMap(e=>{const a=[];for(let p=e,n=0;p&&n<7;p=p.parentElement,n++)a.push({tag:p.tagName,classes:clean(p.className),images:p.querySelectorAll('img').length});return a}) }, composer: { editors: editors().length, draftLength: editors().reduce((n,e) => n + (e.textContent || '').length, 0), submitCount: submitButtons().length, submitDisabled: submitButtons().some(disabled), busy: busy(), online: navigator.onLine }, host: location.hostname, projectOpen: /^\/project\/[^/]+/.test(location.pathname), blocked: blocked(), fields: [...document.querySelectorAll('video')].map(e=>({tag:'video',role:e.parentElement.tagName,label:JSON.stringify({loop:e.loop,duration:Number.isFinite(e.duration)?e.duration:null,width:e.videoWidth,height:e.videoHeight}),placeholder:(e.currentSrc||e.src?new URL(e.currentSrc||e.src).hostname:'no-source')+' '+clean(e.className)})).concat([...document.querySelectorAll('flow-video-tile')].map((e,i)=>({tag:'video-tile',role:String(i),label:clean(e.textContent||e.getAttribute('aria-label')),placeholder:(visible(e)?'visible':'hidden')+' '+[...e.attributes].map(a=>a.name).join(',')})).concat([...document.querySelectorAll('textarea,input:not([type="password"]),[contenteditable="true"],flow-base-prompt-box img,flow-image-tile img,flow-video-tile img')].filter(visible).slice(0, 12).map(e => ({ tag: e.tagName.toLowerCase(), role: e.getAttribute('role') || '', label: clean(e.getAttribute('aria-label') || e.getAttribute('alt')), placeholder: clean(e.tagName==='IMG' ? e.naturalWidth+'x'+e.naturalHeight+' '+(e.src.includes('/asb/')?'asb':'other') : e.getAttribute('placeholder') || e.getAttribute('title')) })))), buttons: buttons().slice(0, 80).map(e => ({ label: clean(e.getAttribute('aria-label')), text: clean(e.textContent), disabled: Boolean(e.disabled || e.getAttribute('aria-disabled') === 'true') })), options: [JSON.stringify(globalThis.kisaraFlowRecoveryDiagnostic || globalThis.kisaraFlowControlDiagnostic || {}),...performance.getEntriesByType('resource').filter(e=>e.initiatorType==='video'||/googlevideo\.com|flow-content\.google\/video\/|\.mp4(?:[?]|$)/i.test(e.name)).slice(-6).map(e=>JSON.stringify({host:new URL(e.name).hostname,type:e.initiatorType,contentType:e.contentType||'',size:e.encodedBodySize}))].concat([...document.querySelectorAll('[role="menuitem"],[role="option"],[role="radio"],[role="tab"],[role="dialog"]')].filter(visible).slice(0, 40).map(e => clean(e.textContent))) });
 +  if (location.hostname !== 'flow.google.com' || !/^\/project\/[^/]+/.test(location.pathname)) throw new Error('project_required');
 +  if (blocked()) throw new Error('google_blocked');
-+  if (task.action === 'recover_video') {
-+    if (typeof globalThis.kisaraFlowRecover === 'function') return await globalThis.kisaraFlowRecover();
++  if(task.action==='download_selected_video'){
++    if(busy()||[...document.querySelectorAll('flow-scene-editor-canvas')].filter(visible).length!==1)throw new Error('media_download_failed');
++    const download=buttons().filter(e=>e.getAttribute('aria-label')==='Download media');
++    if(download.length!==1)throw new Error('media_download_failed');
++    let original=buttons().filter(e=>/^720p\s/.test(clean(e.textContent))&&!disabled(e));
++    if(!original.length){download[0].click();await new Promise(r=>setTimeout(r,300));original=buttons().filter(e=>/^720p\s/.test(clean(e.textContent))&&!disabled(e));}
++    if(original.length!==1)throw new Error('media_download_failed');
++    original[0].click();return {downloadStarted:true};
++  }
++  if (['recover_video','recover_selected_video'].includes(task.action)) {
++    const selected = task.action === 'recover_selected_video';
++    if (!selected && typeof globalThis.kisaraFlowRecover === 'function') return await globalThis.kisaraFlowRecover();
 +    if (busy()) throw new Error('browser_busy');
 +    if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
 +    let players=[...document.querySelectorAll('video')].filter(e=>visible(e)&&(e.currentSrc||e.src));
++    if (selected && !players.length && [...document.querySelectorAll('flow-scene-editor-canvas')].filter(visible).length === 1) return {canvasDownload:true};
++    if (selected && players.length !== 1) throw new Error('multiple_outputs');
 +    if (!players.length) {
 +      const videoFilter=buttons().filter(e=>/^videocam\s*Video$/.test(clean(e.textContent)));
 +      if(videoFilter.length===1){videoFilter[0].click();await new Promise(r=>setTimeout(r,600));}
@@ -307,6 +506,22 @@ index 0000000..af37a45
 +    const add = buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
 +    if (add.length === 1) { add[0].click(); await new Promise(r=>setTimeout(r,500)); }
 +  }
++  if(task.action==='recover_image'){
++    if(busy())throw new Error('browser_busy');
++    let value;try{value=JSON.parse(task.prompt)}catch{throw new Error('unsupported_input')}
++    let images=globalThis.kisaraFlowBatchImages(value.batchKey,value.ids,task.aspect,true);
++    if(images.length!==value.ids?.length){await new Promise(r=>setTimeout(r,750));images=globalThis.kisaraFlowBatchImages(value.batchKey,value.ids,task.aspect);} 
++    if(images.length!==value.ids?.length)throw new Error('result_uncertain');
++    const row=images.find(v=>v.id===value.id);if(!row)throw new Error('result_uncertain');
++    let url=row.image.currentSrc||row.image.src;
++    if(/^https:\/\/flow\.google\.com\/asb\/[^?#]+=[a-z0-9-]+$/i.test(url))url=url.replace(/=[a-z0-9-]+$/i,'=s0');
++    if(url.startsWith('blob:')||new URL(url).origin===location.origin){
++      const response=await fetch(url,{signal:AbortSignal.timeout(30000)}),blob=await response.blob();
++      if(!response.ok||!blob.type.startsWith('image/')||blob.size>20*1024*1024)throw new Error('media_download_failed');
++      url=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob)});
++    }
++    return {mediaUrl:url};
++  }
 +  if (task.action === 'settings') {
 +    const model = buttons().find(e => /^(Model default pembuatan gambar|Default image generation model)$/.test(e.getAttribute('aria-label') || ''));
 +    const choices = model ? [model] : buttons().filter(e => /^(Setelan|Settings)$/.test(e.getAttribute('aria-label') || '') && clean(e.textContent) === 'tune');
@@ -319,19 +534,37 @@ index 0000000..af37a45
 +    const frames = task.action === 'generate_frames_video';
 +    const refs = Array.isArray(task.references) ? task.references : [];
 +    if ((video && refs.length !== 1) || (task.action === 'generate_reference_image' && !refs.length) || refs.length > 3) throw new Error('unsupported_input');
-+    if (task.action !== 'prepare_image' && (!['16:9','9:16'].includes(task.aspect) || typeof task.prompt !== 'string' || !task.prompt.trim() || task.prompt.length > 7000)) throw new Error('unsupported_input');
-+    const command = (video ? 'Animate the attached scene image into exactly ONE 8-second video. Start from this image and preserve its character identity, clothes, scene and art style. Do not make a new still image. Aspect ratio ' + task.aspect + '. No dialogue or music.\n\n' : 'Buat tepat satu gambar statis ' + (task.aspect === '9:16' ? 'portrait 9:16' : 'landscape 16:9') + ' dengan Nano Banana 2.1. Hanya satu gambar, jangan buat video.\n\n') + task.prompt;
++    if (task.action !== 'prepare_image' && (!['16:9','9:16'].includes(task.aspect) || typeof task.prompt !== 'string' || !task.prompt.trim() || task.prompt.length > (task.batchSceneIds?70000:7000))) throw new Error('unsupported_input');
++    const command = (task.batchKey ? '[KISARA:'+task.batchKey+'] Internal job identifier only; never draw or write this identifier in the image.\n\n' : '') + (video ? 'Animate the attached scene image into exactly ONE 8-second video. Start from this image and preserve its character identity, clothes, scene and art style. Do not make a new still image. Aspect ratio ' + task.aspect + '. No dialogue or music.\n\n' : task.batchSceneIds ? 'Buat tepat '+task.batchSceneIds.length+' gambar adegan terpisah '+(task.aspect==='9:16'?'portrait 9:16':'landscape 16:9')+' dengan Nano Banana 2.1. Ikuti setiap label adegan di bawah; bukan kolase.\n\n' : 'Buat tepat satu gambar statis ' + (task.aspect === '9:16' ? 'portrait 9:16' : 'landscape 16:9') + ' dengan Nano Banana 2.1. Hanya satu gambar, jangan buat video.\n\n') + task.prompt;
 +    const textOf = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
 +    const sameDraft = e => textOf(e) === command.replace(/\s+/g, ' ').trim();
 +    if (task.action !== 'prepare_image' && !task.nativeSubmit) throw new Error('native_input_unavailable');
 +    phase = 'prepare';
-+    let promptBox = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Apa yang ingin Anda buat?"], [contenteditable="true"][role="textbox"][aria-label="What do you want to create?"]');
-+    if (busy()) throw new Error('browser_busy');
-+    if (!promptBox) throw new Error('prompt_not_found');
++    if(!task.batchKey)await waitForIdle();
++    const findPrompt = () => editors().find(e=>/^(Apa yang ingin Anda buat\?|What do you want to create\?)$/.test(e.getAttribute('aria-label')||''));
++    const waitForPrompt = async (allowSettings = false) => {
++      const deadline = Date.now() + 10000;
++      while (Date.now() < deadline) {
++        if (blocked()) throw new Error('google_blocked');
++        if (busy()&&!task.batchKey) { await new Promise(r=>setTimeout(r,150));continue; }
++        const current = findPrompt();
++        if (current && current.isConnected && editors().length === 1) {
++          // Background tabs throttle timers; a second poll can exceed the whole deadline.
++          // Return the unique ready editor and reacquire it after each UI transition.
++          return current;
++        } else {
++          if (allowSettings && buttons().some(e=>/^(Model default pembuatan gambar|Default image generation model)$/.test(e.getAttribute('aria-label')||''))) return null;
++        }
++        await new Promise(r=>setTimeout(r,150));
++      }
++      throw new Error('prompt_not_found');
++    };
++    let promptBox = await waitForPrompt(true);
++    if (busy() && !task.batchKey) throw new Error('browser_busy');
++    if (!promptBox && !buttons().some(e=>/^(Model default pembuatan gambar|Default image generation model)$/.test(e.getAttribute('aria-label')||''))) throw new Error('prompt_not_found');
 +    // Only a visible quota refusal before submitting can safely move work to another account.
-+    const quotaNotice = [...document.querySelectorAll('[role="alert"],[role="dialog"],flow-permission-message')].filter(visible).some(e => /insufficient credits|not enough (?:AI )?credits|(?:daily |image |generation )?quota (?:exceeded|exhausted)|kredit (?:AI )?tidak cukup|kuota (?:harian )?(?:habis|terlampaui)/i.test(e.textContent || ''));
-+    if (quotaNotice) throw new Error('quota_exhausted');
-+    if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
++    if (quotaNotice()) throw new Error('quota_exhausted');
++    if ((promptBox?.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
 +    if (!frames) {
 +    const modelLabel = video ? /^(Model default pembuatan video|Default video generation model)$/ : /^(Model default pembuatan gambar|Default image generation model)$/;
 +    let model = buttons().find(e => modelLabel.test(e.getAttribute('aria-label') || '') || video && e.matches('.video-model-picker-button'));
@@ -341,9 +574,26 @@ index 0000000..af37a45
 +      settings[0].click(); await new Promise(r => setTimeout(r, 400));
 +      model = buttons().find(e => modelLabel.test(e.getAttribute('aria-label') || '') || video && e.matches('.video-model-picker-button'));
 +    }
-+    if (!model || !(video ? /Veo|Omni/i : /Nano Banana 2\.1/).test(model.textContent || '')) throw new Error(video ? 'video_model_not_verified' : 'image_model_not_verified');
-+    const modelOption = [...document.querySelectorAll('[role="option"]')].find(e => visible(e) && /Nano Banana 2\.1/.test(e.textContent || ''));
-+    if (!video && modelOption) { modelOption.click(); await new Promise(r => setTimeout(r, 200)); }
++    if (!model) throw new Error(video ? 'video_model_not_verified' : 'image_model_not_verified');
++    if (!video) {
++      const expected = /\bNano Banana 2\.1\b/;
++      const options = () => [...document.querySelectorAll('[role="option"],[role="menuitem"]')].filter(e=>visible(e)&&expected.test(e.textContent||'')&&!disabled(e));
++      if (!expected.test(model.textContent||'') || options().length) {
++        if (!options().length) { model.click(); await new Promise(r=>setTimeout(r,200)); }
++        const deadline=Date.now()+3000;
++        while(!options().length&&Date.now()<deadline) await new Promise(r=>setTimeout(r,100));
++        const choices=options();
++        if(choices.length!==1) throw new Error('image_model_not_verified');
++        choices[0].click();
++        const selectedDeadline=Date.now()+3000;
++        do {
++          model=buttons().find(e=>modelLabel.test(e.getAttribute('aria-label')||''));
++          if(model&&expected.test(model.textContent||''))break;
++          await new Promise(r=>setTimeout(r,100));
++        } while(Date.now()<selectedDeadline);
++      }
++      if(!model||!expected.test(model.textContent||''))throw new Error('image_model_not_verified');
++    } else if(!/Veo|Omni/i.test(model.textContent||'')) throw new Error('video_model_not_verified');
 +    const pane = model.closest('flow-settings-view');
 +    const groups = pane ? [...pane.querySelectorAll('mat-button-toggle-group')] : [];
 +    if (groups.length !== 4) throw new Error('image_settings_not_unique');
@@ -361,7 +611,7 @@ index 0000000..af37a45
 +    save[0].click(); await new Promise(r => setTimeout(r, 300));
 +    if (blocked()) throw new Error('google_blocked');
 +    }
-+    if (task.action === 'prepare_image') return snapshot();
++    if (task.action === 'prepare_image') { await waitForPrompt(); return snapshot(); }
 +    let verifiedFrame = null;
 +    if (frames) {
 +      phase = 'frames';
@@ -403,7 +653,7 @@ index 0000000..af37a45
 +      if(slots.length!==1) throw new Error('frames_mode_unavailable');
 +      const slot=slots[0];
 +      // A populated start frame is reused only when decoded pixels match the requested scene.
-+      const pixels=async url=>{const r=await fetch(url,{signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error('start_frame_unverified');const b=await createImageBitmap(await r.blob()),c=new OffscreenCanvas(64,64),ctx=c.getContext('2d');ctx.drawImage(b,0,0,64,64);b.close();return ctx.getImageData(0,0,64,64).data;};
++      const pixels=referencePixels;
 +      const frameImage=()=>[...slot.querySelectorAll('img')].find(e=>e.naturalWidth>=64);
 +      const matches=async()=>{const img=frameImage();if(!img)return false;const a=await pixels(img.currentSrc||img.src),b=await pixels(refs[0]);let delta=0;for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);return delta/a.length<=12;};
 +      if(frameImage()&&!await matches()) throw new Error('existing_attachments');
@@ -422,9 +672,7 @@ index 0000000..af37a45
 +      if(endSlots.some(e=>e.querySelector('img')))throw new Error('existing_attachments');
 +    }
 +    // Closing settings may replace the editor; never type into a detached node.
-+    const liveEditors = editors().filter(e => /^(Apa yang ingin Anda buat\?|What do you want to create\?)$/.test(e.getAttribute('aria-label') || ''));
-+    if (liveEditors.length !== 1) throw new Error('prompt_not_found');
-+    promptBox = liveEditors[0];
++    promptBox = await waitForPrompt();
 +    if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
 +    // Upload through the normal composer, and verify actual attachments before any paid submit.
 +    let composer = frames ? null : promptBox.parentElement;
@@ -434,25 +682,20 @@ index 0000000..af37a45
 +    } else {
 +      const liveComposer = () => { let p=editors()[0]?.parentElement;while(p&&!p.querySelector('[aria-label="Mulai pembuatan"],[aria-label="Start generation"]'))p=p.parentElement;return p&&p!==document.body?p:composer; };
 +      const thumbnails = () => [...liveComposer().querySelectorAll('img')].filter(e => visible(e) && !e.closest('flow-image-tile,flow-video-tile') && e.naturalWidth >= 64);
-+      let reuseAttachments = false;
-+      if (thumbnails().length) {
-+        if (thumbnails().length === refs.length) {
-+          try {
-+            const pixels = async url => {
-+              const response=await fetch(url,{signal:AbortSignal.timeout(10000)});
-+              if(!response.ok)throw new Error('reference_upload_failed');
-+              const bitmap=await createImageBitmap(await response.blob()),canvas=new OffscreenCanvas(64,64),ctx=canvas.getContext('2d');
-+              ctx.drawImage(bitmap,0,0,64,64);bitmap.close();return ctx.getImageData(0,0,64,64).data;
-+            };
-+            reuseAttachments = true;
-+            for (let i=0;i<refs.length;i++) {
-+              const a=await pixels(thumbnails()[i].currentSrc||thumbnails()[i].src),b=await pixels(refs[i]);let delta=0;
-+              for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);
-+              if(delta/a.length>12)reuseAttachments=false;
-+            }
-+          } catch { reuseAttachments = false; }
++      const matchingAttachments=async()=>{
++        if(thumbnails().length!==refs.length)return false;
++        const pixels=referencePixels;
++        for(let i=0;i<refs.length;i++){
++          const a=await pixels(thumbnails()[i].currentSrc||thumbnails()[i].src),b=await pixels(refs[i]);let delta=0;
++          for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);
++          if(delta/a.length>12)return false;
 +        }
-+        if (!reuseAttachments) throw new Error('existing_attachments');
++        return true;
++      };
++      let reuseAttachments = false;
++      if(thumbnails().length){
++        try{reuseAttachments=await matchingAttachments();}catch{}
++        if(!reuseAttachments)throw new Error('existing_attachments');
 +      }
 +      if (refs.length && !reuseAttachments) {
 +        const transfer = new DataTransfer();
@@ -466,15 +709,86 @@ index 0000000..af37a45
 +          referenceNames.push(name);
 +          transfer.items.add(new File([blob], name, {type:blob.type}));
 +        }
++        const ingredientControls=()=>buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
++        const referencePickerOpen=()=>!ingredientControls().length||ingredientControls().some(e=>clean(e.textContent)==='close');
++        const candidatesFor=name=>buttons().filter(e=>clean(e.textContent).startsWith(name));
++        const selectReferenceCard=async card=>{
++          const count=thumbnails().length;
++          card.click();
++          const deadline=Date.now()+2000;
++          while(Date.now()<deadline){
++            const add=buttons().find(e=>/^(Tambahkan ke perintah|Add to prompt)$/.test(clean(e.textContent)));
++            if(!card.isConnected||!visible(card)||thumbnails().length>count||card.getAttribute('aria-selected')==='true'||add&&!disabled(add)||ingredientControls().some(e=>clean(e.textContent)==='add'))return;
++            await new Promise(r=>setTimeout(r,100));
++          }
++          // Older pickers require trusted mouse input; only use it if selection has not taken effect.
++          await nativeControlClick(card);
++        };
++        const confirmReferenceSelection=async button=>{
++          // A closed ingredient picker means card selection already attached the image.
++          // An unrelated media preview can still expose an Add to prompt button elsewhere.
++          if(!referencePickerOpen())return;
++          const count=thumbnails().length;
++          button.click();
++          await new Promise(r=>setTimeout(r,300));
++          if(button.isConnected&&visible(button)&&thumbnails().length===count)await nativeControlClick(button);
++        };
++        const selectReferences=async()=>{
++          for(const name of referenceNames){
++            let candidates=candidatesFor(name);
++            if(!candidates.length){
++              const toggle=ingredientControls();
++              if(toggle.length===1&&clean(toggle[0].textContent)!=='close')toggle[0].click();
++              const deadline=Date.now()+3000;
++              while(!(candidates=candidatesFor(name)).length&&Date.now()<deadline)await new Promise(r=>setTimeout(r,100));
++            }
++            if(!candidates.length)throw new Error('reference_upload_failed');
++            await selectReferenceCard(candidates[0]);
++            // Let the selected chip and picker close settle before considering any confirmation.
++            await new Promise(r=>setTimeout(r,750));
++          }
++        };
++        const available=new Set();
++        const addControl=ingredientControls();
++        if(addControl.length===1){
++          if(clean(addControl[0].textContent)!=='close')addControl[0].click();
++          const deadline=Date.now()+1500;
++          while(Date.now()<deadline){
++            for(const name of referenceNames)if(candidatesFor(name).length)available.add(name);
++            if(available.size===referenceNames.length)break;
++            await new Promise(r=>setTimeout(r,150));
++          }
++          if(available.size===referenceNames.length){
++            await selectReferences();
++            // Some Flow layouts attach a selected card immediately and close the picker.
++            // Others require Add to prompt. Verify attachment before looking for that button.
++            const attachDeadline=Date.now()+3000;
++            while(thumbnails().length!==refs.length&&Date.now()<attachDeadline){
++              const add=buttons().filter(e=>/^(Tambahkan ke perintah|Add to prompt)$/.test(clean(e.textContent)));
++              if(referencePickerOpen()&&add.length===1&&!disabled(add[0])){await confirmReferenceSelection(add[0]);break;}
++              await new Promise(r=>setTimeout(r,100));
++            }
++            if(thumbnails().length!==refs.length&&!buttons().some(e=>/^(Tambahkan ke perintah|Add to prompt)$/.test(clean(e.textContent)))){
++              await new Promise(r=>setTimeout(r,250));
++            }
++          } else {
++            const close=ingredientControls();
++            if(close.length===1&&clean(close[0].textContent)==='close')close[0].click();
++          }
++        }
++        const missing=new DataTransfer();
++        for(const file of transfer.files)if(!available.has(file.name))missing.items.add(file);
++        if(available.size!==referenceNames.length){
 +        const inputs = [...composer.querySelectorAll('input[type="file"]')].filter(e => !e.disabled && /image|png|jpg|jpeg|webp/i.test(e.accept));
 +        if (inputs.length === 1) {
-+          inputs[0].files = transfer.files;
++          inputs[0].files = missing.files;
 +          inputs[0].dispatchEvent(new Event('change', {bubbles:true}));
 +        } else {
-+          for (const type of ['dragenter','dragover','drop']) promptBox.dispatchEvent(new DragEvent(type, {bubbles:true,cancelable:true,dataTransfer:transfer}));
++          for (const type of ['dragenter','dragover','drop']) promptBox.dispatchEvent(new DragEvent(type, {bubbles:true,cancelable:true,dataTransfer:missing}));
++        }
 +        }
 +        const uploadDeadline = Date.now() + 60000;
-+        let uploaded = false, pickerOpened = false, selectedReferences = false;
++        let uploaded = false, pickerOpened = false, selectedReferences = available.size === referenceNames.length;
 +        const sentAt = Date.now();
 +        while (Date.now() < uploadDeadline) {
 +          if (blocked()) throw new Error('google_blocked');
@@ -482,34 +796,35 @@ index 0000000..af37a45
 +          if (!thumbnails().length && Date.now() - sentAt > 1500) {
 +            if (!pickerOpened) {
 +              const add = buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
-+              if (add.length === 1) { if (clean(add[0].textContent) !== 'close') await nativeControlClick(add[0]); pickerOpened = true; }
++              if (add.length === 1) { if (clean(add[0].textContent) !== 'close') add[0].click(); pickerOpened = true; }
 +            }
 +            if (pickerOpened && !selectedReferences) {
 +              const candidates = referenceNames.map(name=>buttons().filter(e=>clean(e.textContent).startsWith(name)));
 +              if (candidates.every(a=>a.length>=1)) {
-+                for (const items of candidates) await nativeControlClick(items[0]);
++                await selectReferences();
 +                selectedReferences = true;
 +              }
 +            }
 +            if (selectedReferences) {
 +                const addToPrompt = buttons().filter(e=>/^(Tambahkan ke perintah|Add to prompt)$/.test(clean(e.textContent)));
-+                if (addToPrompt.length === 1 && !disabled(addToPrompt[0])) { await nativeControlClick(addToPrompt[0]); pickerOpened = false; }
++                if (referencePickerOpen() && addToPrompt.length === 1 && !disabled(addToPrompt[0])) { await confirmReferenceSelection(addToPrompt[0]); pickerOpened = false; }
 +            }
 +          }
 +          if (thumbnails().length === refs.length && ![...liveComposer().querySelectorAll('[role="progressbar"],mat-spinner')].some(visible)) { uploaded = true; break; }
 +          await new Promise(r=>setTimeout(r,250));
 +        }
-+        if (!uploaded) throw new Error('reference_upload_failed');
++        if (!uploaded || !await matchingAttachments()) throw new Error('reference_upload_failed');
 +        // Upload can reconstruct the editor; use the live node.
-+        const boxes = editors();
-+        if (boxes.length !== 1) throw new Error('prompt_not_found');
-+        promptBox = boxes[0];
++        promptBox = await waitForPrompt();
 +        if ((promptBox.textContent || '').trim() && !sameDraft(promptBox)) throw new Error('existing_draft');
 +      }
 +    }
 +    phase = 'input';
 +    const mediaId = img => img.dataset.mediaId || (img.currentSrc || img.src).match(/flow-content\.google\/(?:image|video)\/([a-f0-9-]{36})/i)?.[1] || (img.currentSrc || img.src || '').replace(/=[a-z0-9-]+$/i,'');
-+    const images = () => [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')].filter(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144 && !e.closest('flow-video-tile')?.querySelector('flow-pending-tile'));
++    const batchUserTurn=()=>task.batchKey?[...document.querySelectorAll('flow-chat-bubble')].find(e=>e.querySelector('.user-bubble')&&e.textContent.includes('[KISARA:'+task.batchKey+']')):null;
++    const batchResponse=()=>{const turns=[...document.querySelectorAll('flow-chat-bubble')],start=turns.indexOf(batchUserTurn());if(start<0)return [];const roots=[];for(let i=start+1;i<turns.length;i++){if(turns[i].querySelector('.user-bubble'))break;if(turns[i].querySelector('.agent-bubble'))roots.push(turns[i])}return roots};
++    const outputBusy=()=>task.batchKey?batchResponse().some(e=>e.querySelector('flow-pending-tile,[role="progressbar"],mat-spinner')):busy();
++    const images = () => task.batchKey ? batchResponse().flatMap(root=>[...root.querySelectorAll('img')]).filter(e=>mediaId(e)&&e.naturalWidth>=144&&e.naturalHeight>=144) : [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')].filter(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144 && !e.closest('flow-video-tile')?.querySelector('flow-pending-tile'));
 +    const baselineImages = () => [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')];
 +    const before = new Set(baselineImages().map(mediaId));
 +    const expectedRatio = task.aspect === '9:16' ? 9/16 : 16/9;
@@ -524,16 +839,27 @@ index 0000000..af37a45
 +    let submit;
 +    while (Date.now() < readyDeadline) {
 +      if (blocked()) throw new Error('google_blocked');
++      if (quotaNotice()) throw new Error('quota_exhausted');
 +      if (!promptBox.isConnected || !sameDraft(promptBox)) throw new Error('prompt_input_failed');
 +      const choices = submitButtons();
 +      if (choices.length === 1 && !disabled(choices[0])) { submit = choices[0]; break; }
 +      await new Promise(r => setTimeout(r, 100));
 +    }
 +    if (!submit) throw new Error('submit_not_ready');
-+    const idleDeadline = Date.now() + 30000;
-+    while (busy() && Date.now() < idleDeadline) await new Promise(r=>setTimeout(r,250));
-+    if (busy()) throw new Error('browser_busy');
++    if(!task.batchKey)await waitForIdle();
 +    if (blocked()) throw new Error('google_blocked');
++    const batchLabelledImages=()=>globalThis.kisaraFlowBatchImages(task.batchKey,task.batchSceneIds,task.aspect,true).filter(row=>!before.has(mediaId(row.image)));
++    const batchResults=async failure=>{
++      const values=[];
++      for(const row of batchLabelledImages()){
++        let url=row.image.currentSrc||row.image.src;
++        if(/^https:\/\/flow\.google\.com\/asb\/[^?#]+=[a-z0-9-]+$/i.test(url))url=url.replace(/=[a-z0-9-]+$/i,'=s0');
++        if(url.startsWith('blob:')||new URL(url).origin===location.origin){const response=await fetch(url,{signal:AbortSignal.timeout(30000)}),blob=await response.blob();if(!response.ok||!blob.type.startsWith('image/')||blob.size>20*1024*1024)continue;url=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob)})}
++        values.push({id:row.id,mediaUrl:url});
++      }
++      return {batchImages:values,...(failure?{batchFailure:failure}:{})};
++    };
++    let batchAcknowledged=false;
 +    const collect = async () => {
 +    phase = 'submitted';
 +    clicked = true;
@@ -542,17 +868,23 @@ index 0000000..af37a45
 +    while (Date.now() < confirmDeadline) {
 +      if (blocked()) throw new Error('google_blocked');
 +      if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
-+      if (busy() || images().some(e => !before.has(mediaId(e))) || promptBox.isConnected && !(promptBox.textContent || '').trim()) { confirmed = true; break; }
++      if (task.batchKey ? batchUserTurn()&&batchResponse().length : busy() || images().some(e => !before.has(mediaId(e))) || promptBox.isConnected && !(promptBox.textContent || '').trim()) { confirmed = true; break; }
 +      await new Promise(r => setTimeout(r, 150));
 +    }
 +    if (!confirmed) throw new Error('submit_unconfirmed');
++    if(task.batchKey&&!batchAcknowledged){batchAcknowledged=true;globalThis.kisaraFlowBatchCollectors ||= new Map();globalThis.kisaraFlowBatchCollectors.set(task.batchKey,async()=>{try{return await collect()}catch(error){return {failure:{code:['google_blocked','approval_required','pending_timeout','result_timeout','multiple_outputs','media_download_failed'].includes(error.message)?error.message:'result_uncertain',stage:phase,submitted:true}}}});return {batchAccepted:task.batchKey};}
 +    phase = 'waiting';
 +    const deadline = Date.now() + (video ? 600000 : 240000);
 +    while (Date.now() < deadline) {
++      if(task.batchSceneIds){
++        if(blocked())return await batchResults('google_blocked');
++        if(batchLabelledImages().length===task.batchSceneIds.length&&!outputBusy())return await batchResults();
++        await new Promise(r=>setTimeout(r,500));continue;
++      }
 +      if (blocked() || /We noticed some unusual activity|aktivitas tidak biasa|insufficient credits|kredit tidak cukup|requesting generations too quickly/i.test(document.body.innerText)) throw new Error('google_blocked');
 +      if (document.querySelector('flow-permission-message div[role="radio"].option-row:not(.read-only)')) throw new Error('approval_required');
 +      const fresh = [...new Map(images().filter(e => !before.has(mediaId(e)) && validOutput(e)).map(e => [mediaId(e), e])).values()];
-+      if (fresh.length === 1 && !busy()) {
++      if (fresh.length === 1 && !outputBusy()) {
 +        phase = 'download';
 +        const image = fresh[0]; let url = image.currentSrc || image.src;
 +        if (video) {
@@ -562,7 +894,13 @@ index 0000000..af37a45
 +          await new Promise(r=>setTimeout(r,300));
 +          const player = tile.querySelector('video');
 +          url = player?.currentSrc || player?.src;
-+          if (!url) { await new Promise(r=>setTimeout(r,600)); continue; }
++          if (!url) {
++            // Open only the uniquely identified new result, never a different library video.
++            tile.click();await new Promise(r=>setTimeout(r,600));
++            if([...document.querySelectorAll('flow-scene-editor-canvas')].filter(visible).length===1)return {canvasDownload:true};
++            url=tile.querySelector('video')?.currentSrc||tile.querySelector('video')?.src;
++            if(!url){await new Promise(r=>setTimeout(r,600));continue;}
++          }
 +        }
 +        if (!video && /^https:\/\/flow\.google\.com\/asb\/[^?#]+=[a-z0-9-]+$/i.test(url)) url = url.replace(/=[a-z0-9-]+$/i, '=s0');
 +        if (video && /^https:\/\//.test(url) && new URL(url).origin === location.origin && new URL(url).pathname.startsWith('/asb/')) return {browserMediaUrl:url,width:image.naturalWidth,height:image.naturalHeight};
@@ -577,13 +915,15 @@ index 0000000..af37a45
 +      if (fresh.length > 1) throw new Error('multiple_outputs');
 +      await new Promise(r => setTimeout(r, 600));
 +    }
++    if(task.batchSceneIds)return await batchResults('batch_mapping_uncertain');
 +    throw new Error(busy() ? 'pending_timeout' : 'result_timeout');
 +    };
 +    if (task.nativeSubmit) {
 +      globalThis.kisaraFlowNativePoint = () => {
 +        try {
 +          if (blocked()) throw new Error('google_blocked');
-+          if (busy()) throw new Error('browser_busy');
++          if (busy() && !task.batchKey) throw new Error('browser_busy');
++          if (quotaNotice()) throw new Error('quota_exhausted');
 +          if (frames && (!verifiedFrame?.image?.isConnected || (verifiedFrame.image.currentSrc || verifiedFrame.image.src) !== verifiedFrame.source)) throw new Error('submit_not_ready');
 +          if (!promptBox.isConnected || !sameDraft(promptBox)) throw new Error('prompt_input_failed');
 +          const choices = submitButtons();
@@ -597,7 +937,7 @@ index 0000000..af37a45
 +          const top = document.elementFromPoint(x, y);
 +          if (!top || !button.contains(top) || disabled(button)) throw new Error('submit_not_ready');
 +          return { x, y };
-+        } catch (error) { return { failure: { code: ['google_blocked','browser_busy','prompt_input_failed','submit_not_ready'].includes(error.message) ? error.message : 'submit_not_ready', stage: 'ready', submitted: false } }; }
++        } catch (error) { return { failure: { code: ['quota_exhausted','google_blocked','browser_busy','prompt_input_failed','submit_not_ready'].includes(error.message) ? error.message : 'submit_not_ready', stage: 'ready', submitted: false } }; }
 +      };
 +      globalThis.kisaraFlowRecover = async () => {
 +        try { return await collect(); }
@@ -678,34 +1018,36 @@ index be41418..ed4c34e 100644
    }
  }
 diff --git a/extension/manifest.json b/extension/manifest.json
-index f69c33e..e1ebbef 100644
+index f69c33e..55e0557 100644
 --- a/extension/manifest.json
 +++ b/extension/manifest.json
-@@ -1,15 +1,19 @@
+@@ -1,15 +1,21 @@
  {
    "manifest_version": 3,
    "name": "Flow2API Captcha Worker",
 -  "version": "1.0.0",
 -  "description": "Generate Google Labs reCAPTCHA Enterprise tokens for Flow2API.",
-+  "version": "1.5.1",
++  "version": "1.6.0",
 +  "description": "Penghubung worker Chrome untuk generasi Google Flow melalui server lokal.",
    "permissions": [
      "storage",
      "tabs",
 -    "scripting"
 +    "scripting",
-+    "debugger"
++    "debugger",
++    "downloads"
    ],
    "host_permissions": [
 -    "https://labs.google/*"
 +    "https://labs.google/*",
 +    "https://flow.google.com/*",
 +    "https://*.googlevideo.com/*",
-+    "https://flow-content.google/*"
++    "https://flow-content.google/*",
++    "https://lh3.googleusercontent.com/*"
    ],
    "background": {
      "service_worker": "background.js"
-@@ -25,5 +29,8 @@
+@@ -25,5 +31,8 @@
        "run_at": "document_idle"
      }
    ],

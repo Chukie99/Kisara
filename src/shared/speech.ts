@@ -6,17 +6,64 @@ import type { Asset, Clip, Project } from './types'
  */
 export const VOICE_TAGS = ['short pause', 'long pause', 'chuckles', 'laugh', 'sigh', 'gasp', 'whispers', 'breath', 'sad', 'excited', 'angry']
 
+/** A visual cut inside a sentence must not instruct the narrator to stop for a new paragraph. */
+export function narrationTakeText(clips: Pick<Clip, 'narration'>[], paragraphSeparator = '\n\n'): string {
+  return clips.reduce((text, clip, index) => {
+    const previous = index ? stripVoiceTags(clips[index - 1].narration).trim() : ''
+    const separator = /[.!?…][”"')]*$/.test(previous) ? paragraphSeparator : ' '
+    return text + (index ? separator : '') + clip.narration.trim()
+  }, '')
+}
+
 export function narrationSpeed(value?: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.max(0.8, Math.min(1.1, value)) * 100) / 100 : 0.9
 }
 
-export function speechFingerprint(project: Pick<Project, 'ttsProvider' | 'ttsVoice' | 'editor'>): string {
-  const identity = [project.ttsProvider, project.ttsVoice, project.ttsProvider === 'supertonic' ? 'local-preset' : project.ttsProvider === 'f5-hf' || project.ttsProvider === 'f5-local' ? 'reference-voice' : project.editor.voiceDelivery ?? 'dramatic']
+export function speechFingerprint(project: Pick<Project, 'ttsProvider' | 'ttsVoice' | 'editor'> & Partial<Pick<Project, 'language'>>): string {
+  const identity = ['pronunciation-v1', project.language ?? 'id', project.ttsProvider, project.ttsVoice, project.ttsProvider === 'supertonic' ? 'local-preset' : project.ttsProvider === 'f5-hf' || project.ttsProvider === 'f5-local' ? 'reference-voice' : effectiveDelivery(project)]
   if (project.ttsProvider === 'supertonic' || project.ttsProvider === 'f5-local') identity.push(String(narrationSpeed(project.editor.narrationSpeed)))
   return JSON.stringify(identity)
 }
 
-export function narrationNeedsRefresh(asset: Asset | null | undefined, clip: Pick<Clip, 'narration'>, project: Pick<Project, 'ttsProvider' | 'ttsVoice' | 'editor'>): boolean {
+/** Explicit delivery wins; educational material should not inherit theatrical fiction delivery. */
+export function effectiveDelivery(project: Pick<Project, 'editor'>): NonNullable<Project['editor']['voiceDelivery']> {
+  return project.editor.voiceDelivery ?? (project.editor.storyBrief?.fictional === true ? 'dramatic' : 'natural')
+}
+
+const DIGITS = ['nol', 'satu', 'dua', 'tiga', 'empat', 'lima', 'enam', 'tujuh', 'delapan', 'sembilan']
+function indonesianInteger(n: number): string {
+  if (n < 10) return DIGITS[n]
+  if (n === 10) return 'sepuluh'
+  if (n === 11) return 'sebelas'
+  if (n < 20) return DIGITS[n - 10] + ' belas'
+  if (n < 100) return DIGITS[Math.floor(n / 10)] + ' puluh' + (n % 10 ? ' ' + DIGITS[n % 10] : '')
+  if (n < 200) return 'seratus' + (n % 100 ? ' ' + indonesianInteger(n % 100) : '')
+  if (n < 1000) return DIGITS[Math.floor(n / 100)] + ' ratus' + (n % 100 ? ' ' + indonesianInteger(n % 100) : '')
+  if (n < 2000) return 'seribu' + (n % 1000 ? ' ' + indonesianInteger(n % 1000) : '')
+  for (const [size, label] of [[1e12, 'triliun'], [1e9, 'miliar'], [1e6, 'juta'], [1000, 'ribu']] as const) {
+    if (n >= size) return indonesianInteger(Math.floor(n / size)) + ' ' + label + (n % size ? ' ' + indonesianInteger(n % size) : '')
+  }
+  return String(n)
+}
+
+/** Only unambiguous Indonesian money/percent notation is expanded; dates, IDs and URLs stay literal. */
+export function pronunciationText(text: string, language: string): string {
+  if (language !== 'id') return text
+  const number = (value: string): string => {
+    const [integer, fraction] = value.replace(/\./g, '').split(',')
+    if (!Number.isSafeInteger(Number(integer)) || Number(integer) >= 1e15) return value
+    return indonesianInteger(Number(integer)) + (fraction ? ' koma ' + [...fraction].map(d => DIGITS[Number(d)]).join(' ') : '')
+  }
+  return text.split(/(<[^<>]*>|https?:\/\/\S+)/g).map(part => {
+    if (/^(?:<|https?:\/\/)/.test(part)) return part
+    return part.replace(/\bRp\.?\s*((?:\d{1,3}(?:\.\d{3})+|\d{1,12})(?:,\d+)?)(?:\s*(ribu|juta|miliar|triliun))?(?![\d,\w]|\.\d)/gi,
+    (_match, value: string, scale?: string) => number(value) + (scale ? ' ' + scale.toLowerCase() : '') + ' rupiah')
+    .replace(/(?<![\w./:,\-])(\d{1,3}(?:\.\d{3})*|\d{1,12})(,\d+)?\s*%/g, (_match, integer: string, fraction?: string) => number(integer + (fraction ?? '')) + ' persen')
+    .replace(/\b(KPR|DP|FLPP|BPS|OJK|BPJS)\b/g, value => ({ KPR: 'ka pe er', DP: 'de pe', FLPP: 'ef el pe pe', BPS: 'be pe es', OJK: 'o je ka', BPJS: 'be pe je es' })[value]!)
+  }).join('')
+}
+
+export function narrationNeedsRefresh(asset: Asset | null | undefined, clip: Pick<Clip, 'narration'>, project: Pick<Project, 'ttsProvider' | 'ttsVoice' | 'editor'> & Partial<Pick<Project, 'language'>>): boolean {
   if (!clip.narration.trim()) return false
   if (!asset || asset.prompt?.trim() !== clip.narration.trim()) return true
   if (asset.provider === 'demo' || asset.provider === 'local') return false
@@ -31,7 +78,7 @@ export const VOICE_DELIVERIES = [
 ] as const
 
 export function deliveryStyle(id?: string): string {
-  return (VOICE_DELIVERIES.find((d) => d.id === id) ?? VOICE_DELIVERIES[0]).style
+  return (VOICE_DELIVERIES.find((d) => d.id === id) ?? VOICE_DELIVERIES[0]).style + ' Read only the supplied narration in its language. Preserve its words, amounts and units; do not translate, paraphrase, add an introduction or speak stage directions. Follow sentence meaning and punctuation with natural breathing, not an identical pause after every visual scene.'
 }
 
 export interface DialogueLine {

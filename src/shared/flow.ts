@@ -19,6 +19,19 @@ export function sceneSpans(clips: Pick<Clip, 'id' | 'durationMs'>[]) {
   })
 }
 
+/** Shared by automatic I2V, the clipboard and manual Flow exports. */
+export function flowVideoPrompt(clip: Pick<Clip, 'videoPrompt' | 'narration'>): string {
+  const motion=stripVoiceTags(clip.videoPrompt || '').trim() || 'Use small natural gestures and subtle environmental motion appropriate to the supplied image.'
+  const narration=stripVoiceTags(clip.narration || '').trim()
+  return [
+    'Use the supplied scene image as the first frame. Preserve the exact character identities, faces, ages, proportions, hairstyles, wardrobe, background, props, composition and illustration style throughout the shot. The supplied image overrides conflicting descriptions or character names in the motion direction.',
+    `Motion direction: ${motion}`,
+    'Animate the existing subjects or physical environment, not just a zoom or pan over a frozen picture. Keep motion modest, natural and consistent with the reference. One continuous shot, no cuts, montage, new people, duplicate characters, extra limbs, added objects or invented events.',
+    narration ? `Narrative context only (do not speak or display it): ${narration}` : '',
+    'Keep existing text and numbers in the supplied image stable and unchanged; do not add new labels, subtitles, numbers, logos or watermarks. Do not animate lips for narration. No spoken dialogue, voiceover, background music or soundtrack. Keep the original aspect ratio. Finish on a stable pose.'
+  ].filter(Boolean).join('\n\n')
+}
+
 export interface FlowPlan {
   mode: 'image' | 'video'
   title: string
@@ -65,15 +78,9 @@ export function buildFlowPlan(bundle: Pick<ProjectBundle, 'project' | 'clips' | 
       const ready = !!stripVoiceTags(clip.narration).trim() && !needsVisual(clip)
       const identities = sceneCharacters(clip, characters).map((c) => `${c.name}: ${simple ? simpleFlowDescription(c.description) : c.description}`).join('\n')
       const motion = clip.videoPrompt ?? ''
-      const videoReady = ready && !!stripVoiceTags(motion).trim()
+      const videoReady = ready || !!clip.imageAssetId
       return { ...spans[i], title: clip.title, narration: stripVoiceTags(clip.narration), ready, motion, videoReady,
-        videoPrompt: videoReady ? [
-          'Use the supplied scene image as the first frame. Preserve its exact characters, faces, ages, wardrobe, setting, composition and illustration style throughout the shot.',
-          `Motion direction: ${stripVoiceTags(motion)}`,
-          'Animate the subjects or physical environment, not just a zoom or pan over a frozen picture. Keep movements believable, modest and consistent with the action visible in the reference. Use one continuous shot, without cuts or a montage. Do not invent extra people, props or story events.',
-          `Narrative context only (do not speak or display it): ${stripVoiceTags(clip.narration)}`,
-          'The supplied frame governs what is visible. Do not depict off-screen or metaphorical events literally. Do not animate lips for narration; no spoken dialogue, voiceover, music, subtitles, text, numbers, logos or watermarks. Keep the original aspect ratio. Finish on a stable pose.'
-        ].join('\n\n') : '',
+        videoPrompt: videoReady ? flowVideoPrompt(clip) : '',
         prompt: ready ? [simple ? SIMPLE_CARTOON : style.prompt, `Aspect ratio ${project.aspectRatio}. One single still frame, no panels.`, identities && `Character continuity:\n${identities}`, simple ? simpleFlowDescription(clip.visualPrompt) : clip.visualPrompt, simple && INDONESIAN_CAST, simple && 'Rendering priority: use only the location, visible action, identity and wardrobe from the shot description above. Draw them as a low-detail flat 2D cartoon; do not inherit its old rendering style. Reduce scenery to a few recognizable shapes.', 'No text, timestamps, numbers, subtitles, speech bubbles, watermarks or logos.'].filter(Boolean).join('\n\n') : '' }
     })
   }

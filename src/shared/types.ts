@@ -47,6 +47,7 @@ export type CaptionSize = 'kecil' | 'sedang' | 'besar'
 export type Step = 1 | 2 | 3 | 4
 
 export interface ScriptProgress {
+  visualIssues?: VisualReviewIssue[]
   draftAvailable?: boolean
   projectId: string
   status: 'running' | 'done' | 'failed' | 'canceled'
@@ -55,7 +56,24 @@ export interface ScriptProgress {
   message: string
 }
 
+export interface VisualReviewIssue {
+  scene: number
+  quote: string
+  reason: string
+  kind?: 'script' | 'visual'
+}
+
+export interface PublicationMetadata {
+  title: string
+  description: string
+  hashtags: string[]
+  thumbnail?: { headline: string; concept: string; prompt: string }
+  source: string
+  origin: 'ai' | 'draft' | 'edited'
+}
+
 export interface EditorSettings {
+  publication?: PublicationMetadata
   contentFormat?: ContentFormat
   durationMode?: 'auto' | 'manual'
   formatPlan?: FormatPlan

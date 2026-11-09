@@ -17,6 +17,8 @@ function save(value: RoutingState): void {
   writeFileSync(filename() + '.tmp', JSON.stringify(value))
   renameSync(filename() + '.tmp', filename())
 }
+/** Expose only known quota flags for the settings page; never infer a reset or alter routing. */
+export function browserQuotaAccounts(base:string):number[] { return [...(read()[base]?.exhausted??[])] }
 /** Keep using one account across clips and restarts; never invent a quota reset time. */
 export function chooseBrowserAccount(base: string, ready: number[], selected: number): number {
   const state = read(), entry = state[base] ?? { exhausted: [] }

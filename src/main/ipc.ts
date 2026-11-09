@@ -1,3 +1,5 @@
+import { generatePublication } from './publication'
+import { publicationDraft, publicationSource, publicationText } from '@shared/publication'
 import { importChannelCharacter, channelCharacterPreview, channelStylePreview } from './channelCharacter'
 import { flowProfiles, openFlowProfile } from './services/flowProfiles'
 import { ensureLocalFlow } from './services/flowLocal'
@@ -40,6 +42,7 @@ import {
   generateClipImage,
   generateClipTts,
   generateClipVideo,
+  recoverFlowVideo,
   generateMissingImages,
   generateMissingVideos,
   generateMissingTts,
@@ -164,6 +167,17 @@ export function registerIpc(): void {
   handle('projects:remove', (id: string) => removeProject(id))
   handle('projects:duplicate', (id: string) => duplicateProject(id))
 
+  handle('story:publication', (projectId: string) => generatePublication(projectId))
+  handle('story:exportPublication', async (projectId: string) => {
+    const b=getBundle(projectId),metadata=b.project.editor.publication || publicationDraft(b.project,b.clips)
+    if(metadata.source!==publicationSource(b.project,b.clips))throw new Error('Naskah sudah berubah. Perbarui paket publikasi dulu sebelum menyimpan TXT.')
+    if(!metadata.title.trim()||!metadata.description.trim())throw new Error('Lengkapi judul dan deskripsi sebelum menyimpan paket publikasi.')
+    const win=BrowserWindow.getFocusedWindow()
+    const res=await dialog.showSaveDialog(win!,{title:'Simpan judul, deskripsi dan hashtag',defaultPath:b.project.title.replace(/[<>:"/\\|?*]/g,' ').slice(0,90)+' - Publikasi.txt',filters:[{name:'Teks',extensions:['txt']}]})
+    if(res.canceled||!res.filePath)return null
+    writeFileSync(res.filePath,publicationText(metadata),'utf8')
+    return res.filePath
+  })
   handle('story:script', (projectId: string) => runScript(projectId))
   handle('story:openScriptDraft', (projectId: string) => runScript(projectId, true))
   handle('story:scriptStatus', (projectId: string) => scriptStatus(projectId))
@@ -220,6 +234,7 @@ export function registerIpc(): void {
     return getBundle(projectId)
   })
   handle('generate:clipVideo', (clipId: string) => generateClipVideo(clipId))
+  handle('generate:recoverFlowVideo', (clipId: string) => recoverFlowVideo(clipId))
   handle('generate:clipTts', (clipId: string) => generateClipTts(clipId))
   handle('generate:characterSheet', (characterId: string) => generateCharacterSheet(characterId))
   handle('generate:missingImages', async (projectId: string, mode?: 'missing' | 'all') => { await checkFlowReady('image'); return generateMissingImages(projectId, mode === 'all' ? 'all' : 'missing') })

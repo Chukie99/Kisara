@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 import time
 import base64
+import re
 from pydantic import BaseModel, Field
 from ..core.auth import verify_api_key_header
 from ..core.config import config
@@ -39,11 +40,22 @@ class BrowserInspect(BaseModel):
 class BrowserImage(BaseModel):
     video_input_mode: Literal['agent', 'frames'] = 'agent'
     recover: bool = False
+    selected: bool = False
     kind: Literal['image', 'video'] = 'image'
     references: list[str] = Field(default_factory=list, max_length=3)
     account_id: int = Field(gt=0)
     prompt: str = Field(min_length=1, max_length=7000)
     aspect: Literal['16:9', '9:16'] = '16:9'
+
+class BatchImageTask(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9_-]+$')
+    prompt: str = Field(min_length=1, max_length=7000)
+    aspect: Literal['16:9', '9:16'] = '16:9'
+    references: list[str] = Field(default_factory=list, max_length=3)
+
+class BrowserImageBatch(BaseModel):
+    account_id: int = Field(gt=0)
+    tasks: list[BatchImageTask] = Field(min_length=1, max_length=10)
 
 class RoutePair(BaseModel):
     account_id: int = Field(gt=0)
@@ -60,7 +72,7 @@ def create_kisara_router(database, manager):
         for row in await db.get_all_tokens_with_stats():
             connected, route = await service.has_connection_for_token(row['id'])
             accounts.append({'id': row['id'], 'email': str(row.get('email') or 'Akun ' + str(row['id']))[:254], 'routeKey': route, 'workerConnected': connected, 'active': bool(row.get('is_active')), 'imageEnabled': bool(row.get('image_enabled', True))})
-        return {'browserFramesVersion': 1, 'browserMediaVersion': 2, 'accounts': accounts, 'workers': workers, 'extensionMode': config.captcha_method == 'extension'}
+        return {'browserBatchVersion': 1, 'browserFramesVersion': 1, 'browserMediaVersion': 2, 'accounts': accounts, 'workers': workers, 'extensionMode': config.captcha_method == 'extension'}
 
     @router.get('/api/kisara/status')
     async def status():
@@ -82,7 +94,7 @@ def create_kisara_router(database, manager):
         service.pending_requests[request_id] = (future, connection.websocket)
         try:
             await connection.websocket.send_text(json.dumps({'type': 'inspect_flow_ui', 'req_id': request_id, 'action': request.action}))
-            result = await asyncio.wait_for(future, timeout=12)
+            result = await asyncio.wait_for(future, timeout=75 if request.action == 'inspect_frames' else 12)
             if result.get('status') != 'success' or not isinstance(result.get('inspection'), dict):
                 raise HTTPException(409, 'Buka tepat satu proyek Flow pada profil akun ini. Pemeriksaan belum berhasil.')
             inspection = result['inspection']
@@ -130,7 +142,9 @@ def create_kisara_router(database, manager):
             size += len(chunk)
             if size > 40 * 1024 * 1024: raise HTTPException(413, 'media_too_large')
             chunks.append(chunk)
-        _media_uploads.clear()
+        for key, value in list(_media_uploads.items()):
+            if time.monotonic() - value[2] > 300: _media_uploads.pop(key, None)
+        if sum(len(value[0]) for value in _media_uploads.values()) + size > 128 * 1024 * 1024: raise HTTPException(413, 'media_too_large')
         _media_uploads[request_id] = (b''.join(chunks), content_type, time.monotonic())
         return {'ok': True}
 
@@ -140,9 +154,73 @@ def create_kisara_router(database, manager):
         if value is None or time.monotonic() - value[2] > 300: raise HTTPException(404, 'media_expired')
         return Response(content=value[0], media_type=value[1])
 
+    @router.post('/api/kisara/browser/image-batch')
+    async def browser_image_batch(request: BrowserImageBatch):
+        ids = [task.id for task in request.tasks]
+        if len(set(ids)) != len(ids): raise HTTPException(400, 'unsupported_input')
+        for task in request.tasks:
+            for ref in task.references:
+                if len(ref) > 28 * 1024 * 1024 or not ref.startswith(('data:image/png;base64,','data:image/jpeg;base64,','data:image/webp;base64,')): raise HTTPException(400, 'unsupported_input')
+                try: base64.b64decode(ref.split(',',1)[1],validate=True)
+                except Exception: raise HTTPException(400,'unsupported_input')
+        if not _state_valid or _browser_lock.locked() or request.account_id in _uncertain_accounts: raise HTTPException(409,'browser_busy_or_uncertain')
+        async with _browser_lock:
+            data = await snapshot()
+            account = next((a for a in data['accounts'] if a['id'] == request.account_id and a['workerConnected']),None)
+            if not account or not account['routeKey']: raise HTTPException(409,'browser_not_ready')
+            service = await ExtensionCaptchaService.get_instance(database())
+            matching = [c for c in service.active_connections if c.route_key == account['routeKey']]
+            if len(matching) != 1: raise HTTPException(409,'browser_not_unique')
+            connection = matching[0]
+            request_id = 'batch_' + uuid.uuid4().hex
+            future = asyncio.get_running_loop().create_future()
+            keys = [request_id] + [request_id+'.'+key for key in ids]
+            for key in keys: service.pending_requests[key] = (future,connection.websocket)
+            try:
+                await connection.websocket.send_text(json.dumps({'type':'inspect_flow_ui','req_id':request_id,'action':'batch_capability'}))
+                capability = await asyncio.wait_for(future,timeout=12)
+                if capability.get('inspection',{}).get('batchVersion') != 1: raise HTTPException(409,'batch_worker_outdated')
+            except asyncio.TimeoutError:
+                for key in keys: service.pending_requests.pop(key,None)
+                raise HTTPException(409,'batch_worker_outdated')
+            except Exception:
+                for key in keys: service.pending_requests.pop(key,None)
+                raise
+            future = asyncio.get_running_loop().create_future()
+            for key in keys: service.pending_requests[key] = (future,connection.websocket)
+            _uncertain_accounts.add(request.account_id); _save_browser_state()
+            allowed = {'quota_exhausted','google_blocked','approval_required','browser_busy','unsupported_input','prompt_not_found','existing_draft','existing_attachments','settings_not_unique','image_model_not_verified','image_settings_not_unique','prompt_input_failed','submit_not_ready','media_download_failed','multiple_outputs','result_uncertain','reference_upload_failed','native_input_unavailable','submit_unconfirmed','pending_timeout','result_timeout','batch_stopped','browser_not_ready'}
+            try:
+                await connection.websocket.send_text(json.dumps({'type':'generate_image_batch','req_id':request_id,'tasks':[task.model_dump() for task in request.tasks]}))
+                result = await asyncio.wait_for(future,timeout=600)
+                rows = result.get('batchResults')
+                if result.get('status') != 'success' or not isinstance(rows,list) or len(rows) != len(ids) or {r.get('id') for r in rows if isinstance(r,dict)} != set(ids): raise HTTPException(409,'result_uncertain')
+                outputs=[]
+                for row in rows:
+                    error = row.get('error'); url = row.get('mediaUrl')
+                    if bool(error) == bool(url): raise HTTPException(409,'result_uncertain')
+                    if error:
+                        outputs.append({'id':row['id'],'error':error if error in allowed else 'result_uncertain','submitted':row.get('submitted') is True})
+                    else:
+                        if not isinstance(url,str) or len(url)>4096 or not (url.startswith('https://') or url == '/api/kisara/browser/media/'+request_id+'.'+row['id']): raise HTTPException(409,'result_uncertain')
+                        outputs.append({'id':row['id'],'mediaUrl':url,'submitted':True})
+                if not any(r.get('error') and (r.get('submitted') or r['error']=='google_blocked') for r in outputs):
+                    _uncertain_accounts.discard(request.account_id);_save_browser_state()
+                return {'results':outputs}
+            except asyncio.TimeoutError: raise HTTPException(504,'result_uncertain')
+            finally:
+                for key in keys: service.pending_requests.pop(key,None)
+
     @router.post('/api/kisara/browser/image')
     async def browser_image(request: BrowserImage):
-        if request.recover and request.kind != 'video': raise HTTPException(400, 'unsupported_input')
+        if request.recover and request.kind == 'image':
+            try:
+                recovery = json.loads(request.prompt)
+                ids = recovery['ids']
+                if request.selected or set(recovery) != {'batchKey','ids','id'} or not re.fullmatch(r'batch_[a-f0-9]{32}',recovery['batchKey']) or not isinstance(ids,list) or not 1 <= len(ids) <= 10 or any(not isinstance(v,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',v) for v in ids) or len(set(ids)) != len(ids) or recovery['id'] not in ids:
+                    raise ValueError('invalid recovery')
+            except (ValueError,TypeError,KeyError): raise HTTPException(400,'unsupported_input')
+        if request.selected and not request.recover: raise HTTPException(400, 'unsupported_input')
         if request.kind == 'video' and len(request.references) != 1 and not request.recover: raise HTTPException(400, 'unsupported_input')
         for ref in request.references:
             if len(ref) > 28 * 1024 * 1024 or not ref.startswith(('data:image/png;base64,', 'data:image/jpeg;base64,', 'data:image/webp;base64,')): raise HTTPException(400, 'unsupported_input')
@@ -166,7 +244,7 @@ def create_kisara_router(database, manager):
             _uncertain_accounts.add(request.account_id)
             _save_browser_state()
             try:
-                await connection.websocket.send_text(json.dumps({'type': 'inspect_flow_ui', 'req_id': request_id, 'action': 'recover_video' if request.recover and request.kind == 'video' else ('generate_frames_video' if request.video_input_mode == 'frames' else 'generate_video') if request.kind == 'video' else 'generate_reference_image' if request.references else 'generate_image', 'prompt': request.prompt, 'aspect': request.aspect, 'references': request.references}))
+                await connection.websocket.send_text(json.dumps({'type': 'inspect_flow_ui', 'req_id': request_id, 'action': 'recover_image' if request.recover and request.kind == 'image' else 'recover_selected_video' if request.recover and request.selected else 'recover_video' if request.recover and request.kind == 'video' else ('generate_frames_video' if request.video_input_mode == 'frames' else 'generate_video') if request.kind == 'video' else 'generate_reference_image' if request.references else 'generate_image', 'prompt': request.prompt, 'aspect': request.aspect, 'references': request.references}))
                 logger.info('Kisara browser account=%d request=%s phase=sent_to_worker', request.account_id, request_id)
                 result = await asyncio.wait_for(future, timeout=720 if request.kind == 'video' else 390)
                 if result.get('status') != 'success' or isinstance(result.get('inspection'), dict) and (result['inspection'].get('errorCode') or result['inspection'].get('preSubmitError') or result['inspection'].get('failure')):
@@ -181,6 +259,11 @@ def create_kisara_router(database, manager):
                         _save_browser_state()
                     raise HTTPException(409, code)
                 media = result.get('inspection', {})
+                download = media.get('downloadFile') if isinstance(media, dict) else None
+                if request.kind == 'video' and isinstance(download, dict) and isinstance(download.get('path'), str) and len(download['path']) < 1024 and isinstance(download.get('size'), int) and 0 < download['size'] <= 40 * 1024 * 1024:
+                    _uncertain_accounts.discard(request.account_id)
+                    _save_browser_state()
+                    return {'downloadFile': {'path': download['path'], 'size': download['size']}}
                 url = media.get('mediaUrl') if isinstance(media, dict) else None
                 if not isinstance(url, str) or len(url) > 56 * 1024 * 1024 or not (url.startswith(('https://', 'data:' + request.kind + '/')) or url == '/api/kisara/browser/media/' + request_id):
                     _uncertain_accounts.add(request.account_id)

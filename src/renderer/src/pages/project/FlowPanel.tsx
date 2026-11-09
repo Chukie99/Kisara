@@ -23,7 +23,7 @@ function SimpleCartoonSwatch() {
   </svg>
 }
 
-export function FlowPanel({ busy, onPrepare, progress }: { busy: boolean; onPrepare: () => void; progress?: ScriptProgress | null }) {
+export function FlowPanel({ busy, onPrepare, progress, onReviewScene, onRepairScript }: { busy: boolean; onPrepare: () => void; progress?: ScriptProgress | null; onReviewScene?: (clipId: string) => void; onRepairScript?: () => void }) {
   const { project, clips, characters, assets, flush, updateEditor, updateClip } = useProject()
   const { toast } = useApp()
   const [saving, setSaving] = useState(false)
@@ -50,6 +50,7 @@ export function FlowPanel({ busy, onPrepare, progress }: { busy: boolean; onPrep
         <p className="mt-1 text-sm text-muted">{plan.scenes.length} adegan · {plan.style} · {plan.aspect}. Tidak perlu membuat gambar di Kisara.</p>
         <p className="mt-1 text-xs text-muted">{plan.timing === 'audio' ? 'Timestamp mengikuti timeline audio.' : 'Timestamp masih perkiraan pada adegan yang belum disuarakan. Ekspor ulang setelah TTS atau timeline berubah.'} Nomor dan waktu hanya label, tidak ikut disalin ke prompt {video ? 'video' : 'gambar'}.</p>
       </div>
+      <p role="note" className="text-sm leading-relaxed text-ink-2">Saat menyusun prompt, adegan panjang yang belum punya prompt, gambar, video, atau suara dibagi menjadi beberapa shot. Umumnya 3–6 detik per gambar, dengan pembuka lebih singkat. Narasi tetap utuh; setiap shot mendapat momen visual sendiri. Jumlah gambar yang perlu dibuat bisa bertambah.</p>
       <div aria-label="Jenis prompt Google Flow" className="grid grid-cols-2 gap-2">
         {([{ id: 'image', label: 'Text to Image', description: 'Buat gambar per adegan' }, { id: 'video', label: 'Image to Video', description: 'Gerakkan tokoh dan suasana dari gambar' }] as const).map((mode) => <button key={mode.id} type="button" disabled={busy || saving} aria-pressed={plan.mode === mode.id} onClick={() => updateEditor({ flowMode: mode.id })} className={`rounded-xl border p-3 text-left disabled:opacity-50 ${plan.mode === mode.id ? 'border-accent bg-accent-soft' : 'border-line-2 bg-paper hover:border-ink-2'}`}><span className="block text-sm font-semibold">{mode.label}</span><span className="mt-1 block text-xs text-muted">{mode.description}</span></button>)}
       </div>
@@ -61,8 +62,18 @@ export function FlowPanel({ busy, onPrepare, progress }: { busy: boolean; onPrep
         </button>)}
       </div>}
       {progress && (progress.status !== 'done' || ready) && <div aria-label="Status penyusunan prompt" role={progress.status === 'failed' ? 'alert' : 'status'} className="rounded-xl border border-line-2 bg-paper p-4 text-sm">
-        <p className="font-semibold">{progress.status === 'running' ? `Menyusun prompt · ${progress.completed}/${progress.total} diperiksa` : progress.status === 'failed' ? 'Prompt belum berhasil diselesaikan' : progress.status === 'canceled' ? 'Penyusunan prompt dibatalkan' : 'Prompt siap diekspor'}</p>
+        <p className="font-semibold">{progress.status === 'running' ? `Menyusun prompt · ${progress.completed}/${progress.total} diperiksa` : progress.status === 'failed' ? (progress.completed >= progress.total && progress.total > 0 ? 'Prompt tersusun · perlu ditinjau' : 'Prompt belum berhasil diselesaikan') : progress.status === 'canceled' ? 'Penyusunan prompt dibatalkan' : 'Prompt siap diekspor'}</p>
         <p className="mt-2 whitespace-pre-wrap leading-relaxed text-ink-2">{progress.message}</p>
+        {!!progress.visualIssues?.length && <div className="mt-3 flex flex-col gap-2" aria-label="Temuan pemeriksaan storyboard">
+          {progress.visualIssues.map((issue, index) => <div key={issue.scene+':'+index} className="rounded-lg border border-line bg-surface p-3">
+            <p className="font-semibold">Adegan {issue.scene} · {issue.kind === 'script' ? 'Naskah perlu diperbaiki' : 'Visual perlu diperbaiki'}</p>
+            <p className="mt-1 leading-relaxed">{issue.reason}</p>
+            <p className="mt-1 text-xs text-muted">Kutipan aksi: {issue.quote}</p>
+            {onReviewScene && clips[issue.scene - 1] && <Button size="sm" className="mt-2" onClick={() => onReviewScene(clips[issue.scene - 1].id)}>Tinjau adegan {issue.scene}</Button>}
+          </div>)}
+          {progress.visualIssues.some(issue => issue.kind === 'script') && onRepairScript && <Button variant="primary" disabled={busy} onClick={onRepairScript}>Perbaiki temuan naskah</Button>}
+          {progress.visualIssues.some(issue => issue.kind === 'script') && <p className="text-xs text-muted">Pengulangan naskah perlu diperbaiki dari isi ceritanya. Gunakan Perbaiki naskah &amp; dialog, tinjau hasilnya, lalu susun prompt lagi.</p>}
+        </div>}
         {progress.status === 'running' && <>
           <p className="mt-2 text-xs text-muted">Ini proses AI penulis. Hugging Face dan Cloudflare tidak dipakai. Prompt yang sudah diperiksa disimpan ke disk dan bisa dilanjutkan setelah aplikasi dibuka ulang.</p>
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-sand"><div className="h-full bg-accent transition-all" style={{ width: `${progress.total ? 100 * progress.completed / progress.total : 0}%` }} /></div>

@@ -1,0 +1,9 @@
+Use the supplied scene image as the first frame. Preserve the exact character identities, faces, ages, proportions, hairstyles, wardrobe, background, props, composition and illustration style throughout the shot. The supplied image overrides conflicting descriptions or character names in the motion direction.
+
+Motion direction: A small block segment detaches from the paper sheet and slides directly into the rising bar block beside Budi.
+
+Animate the existing subjects or physical environment, not just a zoom or pan over a frozen picture. Keep motion modest, natural and consistent with the reference. One continuous shot, no cuts, montage, new people, duplicate characters, extra limbs, added objects or invented events.
+
+Narrative context only (do not speak or display it): Biaya provisi adalah beban administrasi pinjaman yang langsung menaikkan kewajiban bayar awal.
+
+Keep existing text and numbers in the supplied image stable and unchanged; do not add new labels, subtitles, numbers, logos or watermarks. Do not animate lips for narration. No spoken dialogue, voiceover, background music or soundtrack. Keep the original aspect ratio. Finish on a stable pose.

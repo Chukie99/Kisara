@@ -1,0 +1,5 @@
+# Membongkar Biaya di Balik Promo Bunga 0%
+
+Rasio 9:16. Gunakan satu gambar adegan untuk satu video. Kenzo dan gaya mengikuti gambar tersebut, bukan lembar lima pose.
+
+Cara pakai: buka mode video dari gambar di Flow (Frames jika tersedia), lampirkan gambar bernomor sama, lalu tempel isi file prompt bernomor sama. Pilih satu output. Gunakan durasi yang tersedia di akunmu; panjang klip di Kisara bukan jaminan durasi hasil Flow. Setelah selesai, pilih klip yang sama di Kisara → Gerak → Video AI → Impor video, atau buka videonya di Flow lalu Ambil video dari Flow. Jangan Generate ulang jika hasil sudah ada.

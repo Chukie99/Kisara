@@ -24,6 +24,8 @@ const api: StudioApi = {
     duplicate: call('projects:duplicate')
   },
   story: {
+    publication: call('story:publication'),
+    exportPublication: call('story:exportPublication'),
     planContent: call('story:planContent'),
     brainstorm: call('story:brainstorm'),
     reviewScript: call('story:reviewScript'),
@@ -49,6 +51,7 @@ const api: StudioApi = {
     clipImage: call('generate:clipImage'),
     pipeline: call('generate:pipeline'),
     clipVideo: call('generate:clipVideo'),
+    recoverFlowVideo: call('generate:recoverFlowVideo'),
     clipTts: call('generate:clipTts'),
     characterSheet: call('generate:characterSheet'),
     missingImages: call('generate:missingImages'),

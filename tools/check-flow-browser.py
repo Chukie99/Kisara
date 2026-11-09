@@ -35,15 +35,24 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
      page.wait_for_timeout(100)
      if not answers.empty():return answers.get_nowait()
     raise AssertionError('worker did not answer')
-   for mode in ['success','portrait','trusted_click','pointer_sequence','gate','blocked','draft','multiple','quota','quota_blocked','delayed_enable','replaced_editor','replaced_submit','matching_draft','hidden_pending','aria_disabled','submit_no_effect','native_attach_failure','native_release_failure']:
+   for mode in ['success','portrait','trusted_click','pointer_sequence','gate','blocked','draft','multiple','quota','quota_blocked','delayed_enable','replaced_editor','replaced_submit','matching_draft','hidden_pending','aria_disabled','submit_no_effect','native_attach_failure','native_release_failure','chat_blocked','chat_blocked_before','hidden_chat_block','prompt_mentions_block','quota_id_banner','quota_en_banner','hidden_credit_banner','prompt_quota_text','quota_ready_banner','quota_banner_blocked']:
     page.goto('https://flow.google.com/project/fixture');page.wait_for_load_state('networkidle')
-    page.evaluate('''mode=>{window.finish=()=>{if(mode==='gate'){document.body.insertAdjacentHTML('beforeend','<flow-permission-message><div role="radio" class="option-row">Approve paid generation</div></flow-permission-message>');return;}if(mode==='blocked'){document.body.insertAdjacentHTML('beforeend','<div role="alert">We noticed some unusual activity</div>');return;}for(let i=0;i<(mode==='multiple'?2:1);i++){const tile=document.createElement('flow-image-tile');tile.innerHTML='<img data-media-id="22222222-2222-2222-2222-22222222222'+i+'" src="https://media.example.test/new'+i+'.png">';document.body.append(tile)}}}''',mode)
+    page.evaluate('''mode=>{window.finish=()=>{if(mode==='gate'){document.body.insertAdjacentHTML('beforeend','<flow-permission-message><div role="radio" class="option-row">Approve paid generation</div></flow-permission-message>');return;}if(mode==='chat_blocked'){document.body.insertAdjacentHTML('beforeend','<flow-chat-error-card><div class=chat-error-card><div class=error-text>Kami mendapati aktivitas yang tidak biasa. Perhatikan bahwa ekstensi browser yang mengubah halaman dapat menyebabkan masalah.</div><button>Coba lagi</button></div></flow-chat-error-card>');return;}if(mode==='blocked'){document.body.insertAdjacentHTML('beforeend','<div role="alert">We noticed some unusual activity</div>');return;}for(let i=0;i<(mode==='multiple'?2:1);i++){const tile=document.createElement('flow-image-tile');tile.innerHTML='<img data-media-id="22222222-2222-2222-2222-22222222222'+i+'" src="https://media.example.test/new'+i+'.png">';document.body.append(tile)}}}''',mode)
     page.evaluate("()=>{const g=document.querySelectorAll('mat-button-toggle-group');g[1].querySelectorAll('button')[1].click();g[3].querySelectorAll('button')[1].click()}")
     if mode in ['trusted_click','pointer_sequence']:
      page.evaluate("mode=>{const b=document.querySelector('[aria-label=\"Mulai pembuatan\"]');b.onmousedown=e=>{window.nativeDown=e.isTrusted};b.onclick=e=>{window.lastTrusted=e.isTrusted;if(!e.isTrusted||mode==='pointer_sequence'&&!window.nativeDown)return;window.submits=(window.submits||0)+1;window.finish()}}",mode)
     if mode in ['trusted_click','pointer_sequence']:
      page.evaluate("()=>{const b=document.querySelector('[aria-label=\"Mulai pembuatan\"]');b.disabled=false;b.click();b.disabled=true}")
      assert page.evaluate('window.lastTrusted===false && !window.submits')
+    if mode=='chat_blocked_before':page.evaluate("document.body.insertAdjacentHTML('beforeend','<flow-chat-error-card>Kami mendapati aktivitas yang tidak biasa.</flow-chat-error-card>')")
+    if mode=='hidden_chat_block':page.evaluate("document.body.insertAdjacentHTML('beforeend','<flow-chat-error-card hidden>Kami mendapati aktivitas yang tidak biasa.</flow-chat-error-card>')")
+    if mode=='prompt_mentions_block':page.evaluate("document.body.insertAdjacentHTML('beforeend','<div class=user-message>Kami mendapati aktivitas yang tidak biasa.</div>')")
+    if mode in ['quota_id_banner','hidden_credit_banner','quota_banner_blocked']:
+     page.evaluate("hidden=>{const b=document.createElement('flow-credit-banner');b.hidden=hidden;b.innerHTML='<div class=credit-banner-error><span>Kredit Google Flow Anda habis. Anda dapat menunggu hingga kredit direset atau upgrade.</span></div>';document.body.append(b)}",mode=='hidden_credit_banner')
+    if mode=='quota_en_banner':page.evaluate("()=>{const b=document.createElement('flow-credit-banner');b.textContent=String.fromCharCode(89,111,117,39,118,101)+' run out of Google Flow credits.';document.body.append(b)}")
+    if mode=='quota_banner_blocked':page.evaluate("document.body.insertAdjacentHTML('beforeend','<flow-chat-error-card>Kami mendapati aktivitas yang tidak biasa.</flow-chat-error-card>')")
+    if mode=='prompt_quota_text':page.evaluate("document.body.insertAdjacentHTML('beforeend','<div class=user-message>Kredit Google Flow Anda habis.</div>')")
+    if mode=='quota_ready_banner':page.evaluate("()=>{document.querySelector('[role=textbox]').addEventListener('input',()=>document.body.insertAdjacentHTML('beforeend','<flow-credit-banner>Kredit Google Flow Anda habis.</flow-credit-banner>'),{once:true})}")
     if mode=='submit_no_effect':page.evaluate('window.finish=()=>{}')
     if mode in ['delayed_enable','aria_disabled']:
      page.evaluate("mode=>{const box=document.querySelector('[role=textbox]');box.oninput=()=>{const button=document.querySelector('[aria-label=\"Mulai pembuatan\"]');button.disabled=false;button.setAttribute('aria-disabled','true');if(mode==='delayed_enable')setTimeout(()=>button.setAttribute('aria-disabled','false'),1800)}}",mode)
@@ -61,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
     finally:
      if mode=='native_attach_failure':w.evaluate('async()=>{const [t]=await chrome.tabs.query({url:"https://flow.google.com/project/*"});await chrome.debugger.detach({tabId:t.id})}')
      if mode=='native_release_failure':w.evaluate('()=>{chrome.debugger.sendCommand=globalThis.originalSend;delete globalThis.originalSend}')
-    if mode in ['success','portrait','trusted_click','pointer_sequence','delayed_enable','replaced_editor','replaced_submit','matching_draft','hidden_pending']:
+    if mode in ['success','portrait','trusted_click','pointer_sequence','delayed_enable','replaced_editor','replaced_submit','matching_draft','hidden_pending','hidden_chat_block','prompt_mentions_block','hidden_credit_banner','prompt_quota_text']:
      assert result['status']=='success',result
      assert result.get('inspection',{}).get('mediaUrl')=='https://media.example.test/new0.png',(mode,result)
      assert page.evaluate('window.submits')==1
@@ -72,19 +81,21 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
      assert page.locator('mat-button-toggle-group').nth(3).locator('[aria-checked=true]').inner_text()=='x2'
      page.screenshot(path=str(root/'tmp/bugcheck/browser-generate-synthetic.png'))
     else:
-     expected={'gate':'approval_required','blocked':'google_blocked','draft':'existing_draft','multiple':'multiple_outputs','quota':'quota_exhausted','quota_blocked':'google_blocked','aria_disabled':'submit_not_ready','submit_no_effect':'submit_unconfirmed','native_attach_failure':'native_input_unavailable','native_release_failure':'submit_unconfirmed'}[mode]
-     if mode=='quota':assert result.get('inspection',{}).get('preSubmitError')==expected,result
+     expected={'quota_id_banner':'quota_exhausted','quota_en_banner':'quota_exhausted','quota_ready_banner':'quota_exhausted','quota_banner_blocked':'google_blocked','chat_blocked':'google_blocked','chat_blocked_before':'google_blocked','gate':'approval_required','blocked':'google_blocked','draft':'existing_draft','multiple':'multiple_outputs','quota':'quota_exhausted','quota_blocked':'google_blocked','aria_disabled':'submit_not_ready','submit_no_effect':'submit_unconfirmed','native_attach_failure':'native_input_unavailable','native_release_failure':'submit_unconfirmed'}[mode]
+     if mode in ['quota','quota_id_banner','quota_en_banner','quota_ready_banner']:assert result.get('inspection',{}).get('preSubmitError')==expected,result
      else:
       failure=result.get('inspection',{}).get('failure',{})
       assert failure.get('code')==expected,result
       if mode=='aria_disabled':assert failure['stage']=='ready' and failure['submitted'] is False,result
       if mode=='submit_no_effect':assert failure['stage']=='submitted' and failure['submitted'] is True,result
-     assert page.evaluate('window.submits||0')==(0 if mode in ['draft','quota','quota_blocked','aria_disabled','native_attach_failure'] else 1)
+     assert page.evaluate('window.submits||0')==(0 if mode in ['draft','quota','quota_blocked','aria_disabled','native_attach_failure','chat_blocked_before','quota_id_banner','quota_en_banner','quota_ready_banner','quota_banner_blocked'] else 1)
    page.goto('https://flow.google.com/project/fixture');page.wait_for_load_state('networkidle')
    legacy=page.evaluate('async()=>{globalThis.legacyResult=await window.eval('+json.dumps((root/'tools/flow2api/extension/browser-ui.js').read_text())+');return await globalThis.kisaraFlowUI({action:"generate_image",prompt:"Synthetic image",aspect:"16:9"})}')
    assert legacy['failure']['code']=='native_input_unavailable',legacy
    assert page.evaluate('window.submits||0')==0
    assert w.evaluate('async()=>{const [tab]=await chrome.tabs.query({url:"https://flow.google.com/project/*"});await chrome.debugger.attach({tabId:tab.id},"1.3");await chrome.debugger.detach({tabId:tab.id});return true}')
+   print('CREDIT BANNER PASS: Indonesian and English exhausted-credit banners classified before submit; late preparation checked; hidden cards and user text ignored; security block takes priority.')
+   print('CHAT BLOCK PASS: visible Indonesian chat error classified google_blocked before/during submit; no retry; hidden card and user text do not trigger a block.')
    print('NATIVE FAULT PASS: attach refusal sends nothing; post-release failure never repeats click; sessions cleaned up.')
    print('NATIVE INPUT PASS: trusted mouse click and pointer sequence accepted, one submit each; debugger released after use.')
    print('SUBMIT REGRESSION PASS: aria-disabled never clicked; delayed enable waited; replaced editor/button handled; ineffective click reported once without retry.')
