@@ -10,11 +10,12 @@ export interface VisualDraft {
   plan: VisualPlan
   groupSize: number
   reviewIssues?: VisualReviewIssue[]
+  failure?: { status: 'failed' | 'canceled'; message: string }
 }
 
 /** Status recovery uses the same source binding as generation, so a stale review cannot block new text. */
 export function visualDraftFingerprint(mode: 'missing' | 'all', project: Project, characters: Character[], clips: Clip[]): string {
-  return createHash('sha256').update(JSON.stringify(['visual-draft-v6-shot-focus', mode, project.synopsis, project.language, project.styleId, project.aspectRatio, characters.map(c => [c.id, c.name, c.description]), clips.map(c => [c.id, c.title, c.story, c.narration, c.visualPrompt])])).digest('hex')
+  return createHash('sha256').update(JSON.stringify(['visual-draft-v8-presentation', mode, project.synopsis, project.language, project.styleId, project.aspectRatio, characters.map(c => [c.id, c.name, c.description]), clips.map(c => [c.id, c.title, c.story, c.narration, c.visualPrompt])])).digest('hex')
 }
 
 const file = (id: string) => join(projectDir(id), 'visual-draft.json')
@@ -36,10 +37,13 @@ export function readVisualDraft(projectId: string, fingerprint: string): VisualD
       ids.add(Number(scene.scene))
       if (!text(scene.setting) || !scene.setting.trim() || !text(scene.action) || !scene.action.trim() || !Array.isArray(scene.characters) || !scene.characters.every(text)) return null
       if (!Array.isArray(scene.wardrobe) || scene.wardrobe.some((w) => !record(w) || !text(w.name) || !text(w.source) || !text(w.outfit))) return null
+      if (scene.role != null && (!['situation','detail','comparison','reaction','consequence','chapter'].includes(String(scene.role)) || !text(scene.focus) || !scene.focus.trim() || scene.focus.length > 180)) return null
+      if (scene.emphasis != null && (!record(scene.emphasis) || !text(scene.emphasis.text) || !text(scene.emphasis.quote) || scene.emphasis.text.length > 60 || scene.emphasis.quote.length > 300)) return null
       if (['framing', 'avoid', 'camera', 'strength', 'motion', 'transition'].some((key) => scene[key] != null && !text(scene[key]))) return null
     }
     if (plan.characters.some((c) => !record(c) || !text(c.name) || !c.name.trim() || !text(c.identity ?? '') || !text(c.outfit ?? ''))) return null
     const plannedScenes = plan.scenes
+    if (draft.failure != null && (!record(draft.failure) || !['failed', 'canceled'].includes(String(draft.failure.status)) || !text(draft.failure.message) || !draft.failure.message.trim() || draft.failure.message.length > 4000)) delete draft.failure
     if (draft.reviewIssues != null && (!Array.isArray(draft.reviewIssues) || draft.reviewIssues.length > 20 || draft.reviewIssues.some(issue => !record(issue) || !Number.isInteger(issue.scene) || !text(issue.quote) || !issue.quote.trim() || !text(issue.reason) || !issue.reason.trim() || issue.reason.length > 1800 || (issue.kind != null && !['script', 'visual'].includes(String(issue.kind))) || !plannedScenes.some(scene => record(scene) && scene.scene === issue.scene && text(scene.action) && scene.action.includes(String(issue.quote)))))) delete draft.reviewIssues
     return draft as unknown as VisualDraft
   } catch {

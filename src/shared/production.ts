@@ -25,11 +25,12 @@ export interface MediaImportPlan {
 }
 export interface MediaImportChoice { fileId: string; clipId: string | null }
 export interface FlowSetup {
+  browserParallelVersion?: number
   browserBatchVersion?: number
   browserFramesVersion?: number
   browserMediaVersion?: number
   generationPause?: { code: 'unusual_activity' | 'uncertain_result'; pausedAt: number; retryAllowed?: boolean }
-  accounts: { id: number; email: string; routeKey: string; workerConnected: boolean; active: boolean; imageEnabled: boolean; quotaExhausted?: boolean }[]
+  accounts: { id: number; email: string; routeKey: string; workerConnected: boolean; active: boolean; imageEnabled: boolean; browserBusy?: boolean; uncertainResult?: boolean; quotaExhausted?: boolean }[]
   workers: { routeKey: string; label: string }[]
   extensionMode: boolean
 }

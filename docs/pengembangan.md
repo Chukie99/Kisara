@@ -164,3 +164,28 @@ Yang ikut dipaketkan (lihat `electron-builder.yml`): `out/`, FFmpeg (di luar asa
 Folder proyek bisa dibagikan tanpa `node_modules`, `out`, dan `dist`. Penerima cukup menjalankan `npm install`
 lalu `npm run dev`. Salinan distribusi juga bisa diberi skrip `START.bat` (Windows) atau `START.command` (macOS)
 yang memasang dependensi, mengunduh Electron, membuild kalau `out/` belum ada, lalu membuka aplikasi.
+
+
+### Pemeriksaan penyajian dan thumbnail
+- node tools/check-presentation.cjs: kutipan dan timing overlay bersama, trim/urutan, cue basi dan split manual.
+- node tools/check-publication.cjs: paket publikasi serta satu prompt thumbnail dengan sumber/judul yang tepat.
+- Harness setelah seed: main: presentationChecks menguji salinan produksi melalui IPC dan menyiapkan rencana shot/teks untuk pratinjau dan ekspor; main: mockThumbnail memasang penulis HTTP tiruan untuk tombol Buat 1 prompt thumbnail. Keduanya hanya memakai profil terisolasi.
+- main: export dengan ok: true menunggu pekerjaan selesai dan memeriksa status done, bukan sekadar jeda tetap.
+
+
+### Uji host referensi Flow
+node tools/check-flow-reference-host.cjs menjalankan ekstensi Chrome pada Flow tiruan, tanpa generasi eksternal. Memakai driver Node dari instalasi Python Playwright lokal yang sudah ada; PLAYWRIGHT_NODE_PATH dapat menunjuk package Playwright lain. FLOW_REFERENCE_LEGACY=1 menguji salinan ekstensi dengan whitelist host lama untuk mereproduksi kegagalan. Setelah seed, harness main: mockFlowTenBatch dengan ok: false memeriksa satu sukses tetap tersimpan, error referensi terlihat dan tugas yang belum dicoba dibatalkan.
+
+### Karakter tetap di menu gaya visual
+
+- Menu gaya visual menyediakan **Upload karakter & gaya**, **Upload gaya saja**, dan **Jadikan gambar gaya sebagai karakter** untuk referensi yang sudah tersimpan. Pilihan berlaku global untuk gambar Flow berikutnya; mengganti prompt atau preset proyek tidak menghapus identitas karakter.
+- Upload gabungan menyimpan satu salinan referensi untuk identitas dan gaya dalam satu transaksi pengaturan. Nama/ciri karakter lama dan deskripsi gaya lama diganti arahan berbasis gambar. Upload gaya saja mempertahankan identitas karakter.
+- Setelah build, jalankan `node tools/check-channel-visual.cjs` di Windows. Uji ini menjalankan Electron dengan dua profil sementara: permintaan tunggal/batch ke server tiruan lokal dan interaksi menu melalui dev harness. Memeriksa pergantian prompt, referensi identik yang dikirim sekali, pembatalan upload, penggunaan referensi lama sebagai karakter, pergantian preset, serta screenshot pada 1180×720. Tidak memakai akun atau generasi Google asli.
+
+### Suara penulisan narasi
+
+Narasi Indonesia memakai bahasa percakapan sehari-hari (gua/lu bila perlu, tanpa slang yang dipaksakan), contoh konkret, dan istilah yang dijelaskan dengan sederhana. Arahan bersama NARRATION_VOICE_DIRECTION di src/shared/storyDirection.ts dipakai saat menyusun, meninjau, dan memperbaiki naskah agar revisi tidak mengembalikan bahasa formal. Bahasa proyek lain tetap dihormati. Teks/suara proyek lama tidak otomatis diganti; jalankan Perbaiki naskah & dialog untuk menerapkan arahan, tinjau hasil, lalu rekam ulang narasi. node tools/check-story-direction.cjs memeriksa arahan yang benar-benar dikirim melalui jalur penulisan/revisi dengan model tiruan; ini bukan penilaian kualitas hasil model produksi.
+
+### Brainstorming dengan sudut yang tidak biasa
+
+Arahan brainstorming berlaku untuk Short dan Long: pertimbangkan kumpulan kandidat lebih luas, singkirkan tips generik serta judul baru dengan jawaban lama, lalu pilih enam pertanyaan/mekanisme/hasil pembahasan yang berbeda. Sudut dan alasan harus menjelaskan bedanya dari pembahasan umum. Riwayat judul juga diperlakukan sebagai konsep yang perlu dihindari. Catatan riset meminta kueri YouTube untuk pembahasan umum dan sudut usulan; aplikasi belum melakukan pencarian YouTube atau membuktikan kebaruan otomatis. Uji request dan pemulihan bahasa: node tools/check-brainstorm.cjs.

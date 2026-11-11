@@ -47,6 +47,8 @@ export interface StudioApi {
     duplicate(id: string): Promise<ProjectSummary>
   }
   story: {
+    thumbnail(projectId: string, selectedTitle?: string): Promise<import('./types').ThumbnailResult>
+    presentationVersion(projectId: string): Promise<ProjectBundle>
     publication(projectId: string): Promise<PublicationMetadata>
     exportPublication(projectId: string): Promise<string | null>
     planContent(synopsis: string, format: ContentFormat, language: string): Promise<FormatPlan>
@@ -125,6 +127,9 @@ export interface StudioApi {
     add(projectId: string, hit: SfxHit): Promise<Asset>
   }
   settings: {
+    importCustomStyleReference(): Promise<{ reference: string; preview: string } | null>
+    customStylePreview(reference: string): Promise<string>
+    importChannelVisual(): Promise<AppSettings | null>
     importChannelStyle(): Promise<AppSettings | null>
     channelStylePreview(): Promise<string | null>
     importChannelCharacter(): Promise<AppSettings | null>

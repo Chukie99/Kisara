@@ -8,7 +8,7 @@ const { build } = require('esbuild')
   fs.mkdirSync(dir, { recursive: true })
   const output = path.join(dir, 'direction.cjs')
   await build({ entryPoints: ['src/shared/storyDirection.ts'], bundle: true, platform: 'node', outfile: output })
-  const { storyBeatSlots, ENGAGEMENT_DIRECTION, SCENE_DIRECTION } = require(output)
+  const { storyBeatSlots, ENGAGEMENT_DIRECTION, SCENE_DIRECTION, NARRATION_VOICE_DIRECTION } = require(output)
   for (let count = 3; count <= 160; count++) {
     for (let beats = 3; beats <= Math.min(12, count); beats++) {
       const slots = storyBeatSlots(count, beats)
@@ -39,6 +39,7 @@ const { build } = require('esbuild')
       calls.push(r)
       if (r.name === 'script-facts') { assert(r.prompt.includes('NO browsing')); return { issues: [] } }
       assert(r.system.includes(ENGAGEMENT_DIRECTION), r.name + ' lost engagement direction')
+      assert(r.system.includes(NARRATION_VOICE_DIRECTION), r.name + ' lost the approved conversational voice')
       assert(r.system.includes('Use a FRONTAL, specific hook'))
       assert(r.system.includes('EXACTLY ONE brief, spoken, topic-specific comment invitation'))
       if (r.name === 'script') { generation++; return { title: project.title, scenes } }
@@ -82,6 +83,10 @@ const { build } = require('esbuild')
   assert.equal(saved.length, 0, 'Invalid editorial quotations must not overwrite the project')
   assert.equal(calls.filter(r => r.name === 'script-comprehension').length, 2)
   assert(SCENE_DIRECTION.includes('BEFORE the intended action'))
+  assert(SCENE_DIRECTION.includes('ONE primary visible subject'))
+  assert(SCENE_DIRECTION.includes('never reset a completed action'))
+  assert(SCENE_DIRECTION.includes('Prefer a locked camera'))
+  assert(SCENE_DIRECTION.includes('do not loop or stretch'))
   let visualUpdates = []
   const clips = scenes.map((s, i) => ({ ...s, id: 'clip-'+i, durationMs: 6000, characterIds: [], visualPrompt: '', videoPrompt: '', cameraPreset: 'static', motionStrength: 'halus', transition: 'cut' }))
   project.styleId = 'cartoon-flat'; project.aspectRatio = '16:9'; project.editor.flowMode = 'video'
@@ -94,10 +99,11 @@ const { build } = require('esbuild')
     assert(r.system.includes(SCENE_DIRECTION))
     assert(r.prompt.includes('Spoken context:'))
     assert(r.prompt.includes(scenes[0].narration))
-    return { world: 'Indonesia, present day', characters: [], scenes: clips.map((c, i) => ({ scene: i+1, setting: 'A small Indonesian coffee stall, daytime', action: 'An adult customer holds a coin near the counter before payment.', wardrobe: [{ name: 'customer', source: 'custom', outfit: 'Blue short sleeve shirt' }], framing: 'Close-up on hand, coin and counter', avoid: 'text, logos, duplicate limbs', characters: [], camera: 'static', strength: 'halus', motion: 'The hand withdraws the coin from the counter and pauses above the open wallet.', transition: 'cut' })) }
+    return { world: 'Indonesia, present day', characters: [], scenes: clips.map((c, i) => ({ scene: i+1, setting: 'A small Indonesian coffee stall, daytime', action: 'An adult customer holds a coin near the counter before payment.', wardrobe: [{ name: 'customer', source: 'custom', outfit: 'Blue short sleeve shirt' }], framing: 'Close-up on hand, coin and counter', avoid: 'text, logos, duplicate limbs', characters: [], role: i%2?'detail':'situation', focus:'Fokus koin dan keputusan sebelum membayar', emphasis:{text:'',quote:''}, camera: 'static', strength: 'halus', motion: 'The hand withdraws the coin from the counter and pauses above the open wallet.', transition: 'cut' })) }
   }
   await generateVisuals('fixture', 'all')
   assert.equal(visualUpdates.length, 3)
+  assert(visualUpdates.every(v=>v.presentation?.focus==='Fokus koin dan keputusan sebelum membayar'));assert(visualUpdates.some(v=>v.presentation.role==='detail'));
   assert(visualUpdates.every(s => s.videoPrompt.includes('withdraws the coin')))
   // An estimated long video may need only twelve distinct passages.
   project.durationSec = 273; project.editor.storyBrief.fictional = false
@@ -152,6 +158,7 @@ const { build } = require('esbuild')
   let revisionRequest, revised
   global.storyDirectionFixture.refine=(_id,updates)=>{revised=updates}
   global.storyDirectionFixture.ask=async r=>{
+    if(r.name!=='script-facts')assert(r.system.includes(NARRATION_VOICE_DIRECTION), r.name + ' lost conversational voice during refinement or review')
     if(r.name==='script-facts'||r.name==='script-comprehension')return {issues:[]}
     if(r.name!=='refine-script')throw Error('Unexpected revision request '+r.name)
     revisionRequest=r

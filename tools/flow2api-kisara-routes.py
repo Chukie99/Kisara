@@ -18,7 +18,11 @@ from ..services.browser_captcha_extension import ExtensionCaptchaService
 
 _media_uploads = {}
 _lock = asyncio.Lock()
-_browser_lock = asyncio.Lock()
+_browser_locks = {}
+
+def _browser_lock(account_id):
+    # Independent Chrome workers can run concurrently; each composer still has one owner.
+    return _browser_locks.setdefault(account_id, asyncio.Lock())
 _state_file = Path(__file__).resolve().parents[2] / 'data' / 'kisara-browser-pending.json'
 try:
     _uncertain_accounts = set(json.loads(_state_file.read_text()) if _state_file.exists() else [])
@@ -71,8 +75,8 @@ def create_kisara_router(database, manager):
         accounts = []
         for row in await db.get_all_tokens_with_stats():
             connected, route = await service.has_connection_for_token(row['id'])
-            accounts.append({'id': row['id'], 'email': str(row.get('email') or 'Akun ' + str(row['id']))[:254], 'routeKey': route, 'workerConnected': connected, 'active': bool(row.get('is_active')), 'imageEnabled': bool(row.get('image_enabled', True))})
-        return {'browserBatchVersion': 1, 'browserFramesVersion': 1, 'browserMediaVersion': 2, 'accounts': accounts, 'workers': workers, 'extensionMode': config.captcha_method == 'extension'}
+            accounts.append({'id': row['id'], 'email': str(row.get('email') or 'Akun ' + str(row['id']))[:254], 'routeKey': route, 'workerConnected': connected, 'active': bool(row.get('is_active')), 'imageEnabled': bool(row.get('image_enabled', True)), 'browserBusy': _browser_lock(row['id']).locked(), 'uncertainResult': row['id'] in _uncertain_accounts})
+        return {'browserParallelVersion': 1, 'browserBatchVersion': 1, 'browserFramesVersion': 1, 'browserMediaVersion': 2, 'accounts': accounts, 'workers': workers, 'extensionMode': config.captcha_method == 'extension'}
 
     @router.get('/api/kisara/status')
     async def status():
@@ -163,8 +167,8 @@ def create_kisara_router(database, manager):
                 if len(ref) > 28 * 1024 * 1024 or not ref.startswith(('data:image/png;base64,','data:image/jpeg;base64,','data:image/webp;base64,')): raise HTTPException(400, 'unsupported_input')
                 try: base64.b64decode(ref.split(',',1)[1],validate=True)
                 except Exception: raise HTTPException(400,'unsupported_input')
-        if not _state_valid or _browser_lock.locked() or request.account_id in _uncertain_accounts: raise HTTPException(409,'browser_busy_or_uncertain')
-        async with _browser_lock:
+        if not _state_valid or _browser_lock(request.account_id).locked() or request.account_id in _uncertain_accounts: raise HTTPException(409,'browser_busy_or_uncertain')
+        async with _browser_lock(request.account_id):
             data = await snapshot()
             account = next((a for a in data['accounts'] if a['id'] == request.account_id and a['workerConnected']),None)
             if not account or not account['routeKey']: raise HTTPException(409,'browser_not_ready')
@@ -226,9 +230,9 @@ def create_kisara_router(database, manager):
             if len(ref) > 28 * 1024 * 1024 or not ref.startswith(('data:image/png;base64,', 'data:image/jpeg;base64,', 'data:image/webp;base64,')): raise HTTPException(400, 'unsupported_input')
             try: base64.b64decode(ref.split(',', 1)[1], validate=True)
             except Exception: raise HTTPException(400, 'unsupported_input')
-        if not _state_valid or _browser_lock.locked() or (request.account_id in _uncertain_accounts and not request.recover):
+        if not _state_valid or _browser_lock(request.account_id).locked() or (request.account_id in _uncertain_accounts and not request.recover):
             raise HTTPException(409, 'browser_busy_or_uncertain')
-        async with _browser_lock:
+        async with _browser_lock(request.account_id):
             data = await snapshot()
             account = next((a for a in data['accounts'] if a['id'] == request.account_id), None)
             if not account or not account['workerConnected'] or not account['routeKey']:
@@ -281,7 +285,7 @@ def create_kisara_router(database, manager):
 
     @router.post('/api/kisara/browser/acknowledge')
     async def acknowledge_browser(request: BrowserInspect):
-        if not _state_valid or _browser_lock.locked():
+        if not _state_valid or _browser_lock(request.account_id).locked():
             raise HTTPException(409, 'browser_busy_or_uncertain')
         # Called only by Kisara's explicit "checked Flow" action, never by a retry loop.
         _uncertain_accounts.discard(request.account_id)

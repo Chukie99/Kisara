@@ -140,7 +140,9 @@ export function textOverlayFrames(o: TextOverlay, total: number): { start: numbe
 
 /** Keep a counter's numeric progress when splitting its timeline item. */
 export function splitOverlay(o: Overlay, at: number, id: string): Overlay[] {
-  const second: Overlay = {...o,id,start:at}
+  // A manual split fixes the resolved times of both halves instead of reattaching the full quote.
+  const first: Overlay = o.kind === 'text' ? { ...o, presentationCue: undefined } : o
+  const second: Overlay = {...first,id,start:at}
   if(second.kind==='text' && second.counter) second.counter={...second.counter,offset:(second.counter.offset??0)+at-o.start}
-  return [{...o,end:at},second]
+  return [{...first,end:at},second]
 }

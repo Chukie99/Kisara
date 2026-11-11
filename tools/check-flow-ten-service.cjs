@@ -13,7 +13,7 @@ const {build}=require('esbuild'), assert=require('node:assert/strict'), fs=requi
   if(req.url.startsWith('/api/kisara/browser/media/')){res.setHeader('Content-Type','image/png');return res.end(Buffer.from(decodeURIComponent(req.url.split('/').at(-1))))}
   assert.equal(req.url,'/api/kisara/browser/image-batch');const b=JSON.parse(raw);calls.push(b.account_id);
   if(scenario==='old'){res.statusCode=409;return res.end(JSON.stringify({detail:'batch_worker_outdated'}))}
-  const results=[...b.tasks].reverse().map((t,i)=>scenario==='quota'?{id:t.id,error:'quota_exhausted',submitted:false}:scenario==='partial'&&i===0?{id:t.id,error:'google_blocked',submitted:true}:{id:t.id,mediaUrl:'/api/kisara/browser/media/'+t.id,submitted:true});
+  const results=[...b.tasks].reverse().map((t,i)=>scenario==='reference'?i===0?{id:t.id,mediaUrl:'/api/kisara/browser/media/'+t.id,submitted:true}:{id:t.id,error:i===1?'reference_upload_failed':'batch_stopped',submitted:false}:scenario==='quota'?{id:t.id,error:'quota_exhausted',submitted:false}:scenario==='partial'&&i===0?{id:t.id,error:'google_blocked',submitted:true}:{id:t.id,mediaUrl:'/api/kisara/browser/media/'+t.id,submitted:true});
   res.end(JSON.stringify({results}));
  });
  await new Promise(r=>server.listen(0,'127.0.0.1',r));global.flowFixture.settings.flowBaseUrl='http://127.0.0.1:'+server.address().port;
@@ -26,6 +26,7 @@ const {build}=require('esbuild'), assert=require('node:assert/strict'), fs=requi
   reset();scenario='preflight-block';await assert.rejects(f.generateImageBatch(requests(10),new AbortController().signal,[]));assert.deepEqual(calls,[]);assert.equal((await f.flowSetup()).generationPause.code,'unusual_activity');console.log('PASS batch preflight: invalid project skipped, security block stops without submissions')
   reset();scenario='quota';await assert.rejects(f.generateImageBatch(requests(10),new AbortController().signal,[]));assert.deepEqual(calls,[1,2,3]);assert.equal((await f.flowSetup()).generationPause,undefined);
   reset();scenario='partial';const out=await f.generateImageBatch(requests(10),new AbortController().signal,[]);assert.equal(out.filter(r=>r.bytes).length,9);assert.equal(out.filter(r=>r.error).length,1);assert.equal((await f.flowSetup()).generationPause.code,'unusual_activity');assert.deepEqual(calls,[1]);
+  reset();scenario='reference';const rejected=await f.generateImageBatch(requests(10),new AbortController().signal,[]);assert.equal(rejected.filter(r=>r.bytes).length,1);assert.equal(rejected.filter(r=>r.error).length,9);assert(rejected.find(r=>r.error?.includes('Generate belum ditekan')));assert.deepEqual(calls,[1]);assert.equal((await f.flowSetup()).generationPause,undefined);
   reset();scenario='old';await assert.rejects(f.generateImageBatch(requests(10),new AbortController().signal,[]),/Worker 1.6.0/);assert.equal((await f.flowSetup()).generationPause,undefined);
   console.log('TEN SERVICE PASS: 10+10+5 pinned to accounts 1,2,3; no revisit in same run; reverse download IDs; only explicit pre-submit quota may fail over; partial successes retained; Google block pauses; old worker sends no generation. Local HTTP only.');
  }finally{server.closeAllConnections();await new Promise(r=>server.close(r))}

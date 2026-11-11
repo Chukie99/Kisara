@@ -13,6 +13,7 @@ import {
   type CaptionChunk
 } from '@shared/captions'
 import { cameraAt, cameraCss, transitionSecOf } from '@shared/motion'
+import { resolvePresentationOverlays } from '@shared/presentation'
 import { anchorOffset, contrastColor, overlayVisible, textEffects, textOverlayFrame } from '@shared/overlays'
 import type { AspectRatio, Asset, EditorSettings, Overlay } from '@shared/types'
 import { IconButton, cx } from '../../../components/ui'
@@ -294,7 +295,7 @@ export function Player({
   const inTransition = !!prev && trSec > 0 && local < trSec
   const fx = inTransition && prevClip ? transitionStyles(prevClip.transition, local / trSec) : null
 
-  const shown = (editor.overlays ?? []).filter((o) => overlayVisible(o, viewT, total))
+  const shown = resolvePresentationOverlays(editor.overlays ?? [], items.map(it => it.clip), assets).filter((o) => overlayVisible(o, viewT, total))
 
   const jump = (dir: -1 | 1): void => {
     stopAudition()

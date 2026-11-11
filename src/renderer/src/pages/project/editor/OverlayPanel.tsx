@@ -19,7 +19,7 @@ import { Button, IconButton, Segmented, Switch, cx, inputCls } from '../../../co
 import { errorText, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
 import { useProject } from '../../../store/project'
-import { addOverlay, removeOverlay, updateOverlay, useOverlayUi, usePlayback } from './engine'
+import { addOverlay, removeOverlay, updateOverlay, usePresentationOverlays, useOverlayUi, usePlayback } from './engine'
 
 const ANCHOR_GRID: Anchor[] = [7, 8, 9, 4, 5, 6, 1, 2, 3]
 const ANCHOR_NAMES: Record<Anchor, string> = {
@@ -216,8 +216,8 @@ export function OverlayPanel({ total }: { total: number }) {
   const { toast } = useApp()
   const selectedId = useOverlayUi((s) => s.selectedId)
   const select = useOverlayUi((s) => s.select)
+  const overlays = usePresentationOverlays()
   if (!project) return null
-  const overlays = project.editor.overlays ?? []
   const aspect = project.aspectRatio === '9:16' ? 9 / 16 : 16 / 9
   const sel = overlays.find((o) => o.id === selectedId) ?? null
 

@@ -66,7 +66,7 @@ export function ProjectPage({ id }: { id: string }) {
       <ProjectHeader
         doneSteps={done}
         right={
-          <><Button onClick={()=>setPublicationOpen(true)}>Judul & deskripsi</Button>{project.step === 4 ? (
+          <><Button onClick={()=>setPublicationOpen(true)}>Judul & thumbnail</Button>{project.step === 4 ? (
             <Button variant="primary" icon={<Download className="size-[18px]" />} onClick={() => setExportOpen(true)}>
               Ekspor video
             </Button>

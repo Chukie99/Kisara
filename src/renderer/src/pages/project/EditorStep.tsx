@@ -12,6 +12,7 @@ import {
   useAudition,
   useCaptionUi,
   useOverlayUi,
+  usePresentationOverlays,
   usePlayback,
   usePlaybackEngine,
   useSfxUi,
@@ -91,7 +92,7 @@ export function EditorStep() {
   // ... and when the panel switches to something else. Cleanup runs before the next panel starts its own loop.
   useEffect(() => () => useAudition.getState().stop(), [tab, selectedClipId, transitionId])
 
-  const overlays = project?.editor.overlays ?? []
+  const overlays = usePresentationOverlays()
   /** What "Potong" cuts at the playhead: the selected overlay when the playhead is inside it, else the clip there. */
   const splitTarget = (t: number): { kind: 'overlay'; id: string } | { kind: 'clip'; item: TimelineItem } | null => {
     if (tab === 'overlay' && selectedOverlayId) {
@@ -108,7 +109,7 @@ export function EditorStep() {
   const sel = selIndex >= 0 ? clips[selIndex] : null
 
   // Every extra overlay row makes the timeline taller, up to about half the window.
-  const timelineHeight = 300 + (project.editor.sfx?.length ? 38 : 0) + (Math.max(1, overlayLanes(project.editor.overlays ?? [], total).length) - 1) * 38
+  const timelineHeight = 300 + (project.editor.sfx?.length ? 38 : 0) + (Math.max(1, overlayLanes(overlays, total).length) - 1) * 38
 
   // The timeline marks whatever the open panel is editing, so only one thing ever looks selected.
   const selection = ((): TimelineSelection => {
@@ -131,7 +132,7 @@ export function EditorStep() {
       const at = Math.round(t * 100) / 100
       const second = crypto.randomUUID()
       updateEditor({
-        overlays: overlays.flatMap((o) => (o.id === target.id ? splitOverlay(o, at, second) : [o]))
+        overlays: (project.editor.overlays ?? []).flatMap((o) => (o.id === target.id ? splitOverlay(overlays.find(v => v.id === o.id) ?? o, at, second) : [o]))
       })
       selectOverlay(second)
       return

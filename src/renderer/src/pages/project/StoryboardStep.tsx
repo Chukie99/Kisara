@@ -1,3 +1,4 @@
+import { PresentationPanel } from './PresentationPanel'
 import { flowVideoPrompt } from '@shared/flow'
 import { MediaImportButton } from './MediaImportButton'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -780,6 +781,7 @@ export function StoryboardStep() {
               {project.ttsProvider === 'f5-hf' && <p className="mt-1">Tes Space hanya memeriksa API. Space publik bisa lambat atau sibuk; menekan tombol lagi akan memulai percobaan baru.</p>}
             </div>
           )}
+          <PresentationPanel disabled={planning || pipelineRunning} onPlan={()=>void planVisuals()} />
           {stale > 0 && (
             <div className="flex items-center gap-3 rounded-2xl border border-sun bg-sun-soft px-4 py-3 text-sm text-sun-ink">
               <Sparkles className="size-[18px] shrink-0" />

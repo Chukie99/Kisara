@@ -1,11 +1,11 @@
 import type { Clip, Project, PublicationMetadata } from './types'
 import { stripVoiceTags } from './speech'
 
-type SourceProject = Pick<Project, 'title' | 'synopsis' | 'language'> & Partial<Pick<Project,'aspectRatio'|'editor'>>
+type SourceProject = Pick<Project, 'title' | 'synopsis' | 'language'> & Partial<Pick<Project,'aspectRatio'|'styleId'|'editor'>>
 type SourceClip = Pick<Clip, 'title' | 'narration' | 'story'>
 
 export function publicationSource(project: SourceProject, clips: SourceClip[]): string {
-  return JSON.stringify([2, project.title, project.synopsis, project.language, project.aspectRatio, project.editor?.contentFormat, clips.map(c=>[c.title,c.story,c.narration])])
+  return JSON.stringify([3, project.title, project.synopsis, project.language, project.aspectRatio, project.styleId, project.editor?.contentFormat, clips.map(c=>[c.title,c.story,c.narration])])
 }
 
 export function publicationHashtags(value: unknown): string[] {
@@ -19,6 +19,13 @@ export function publicationDraft(project: SourceProject, clips: SourceClip[]): P
   return {title:project.title.trim().slice(0,100),description,hashtags:[],source:publicationSource(project,clips),origin:'draft'}
 }
 
+export function thumbnailMetadata(value: unknown): PublicationMetadata['thumbnail'] {
+  if (!value || typeof value !== 'object') return undefined
+  const t = value as NonNullable<PublicationMetadata['thumbnail']>
+  if (typeof t.headline !== 'string' || !t.headline.trim() || t.headline.trim().length > 60 || typeof t.concept !== 'string' || !t.concept.trim() || t.concept.trim().length > 1500 || typeof t.prompt !== 'string' || !t.prompt.trim() || t.prompt.trim().length > 5000) return undefined
+  return { headline: t.headline.trim(), concept: t.concept.trim(), prompt: t.prompt.trim(), ...(typeof t.sourceTitle === 'string' && t.sourceTitle.length <= 100 ? { sourceTitle: t.sourceTitle } : {}), ...(typeof t.source === 'string' ? { source: t.source } : {}) }
+}
+
 export function publicationMetadata(value: unknown, project: SourceProject, clips: SourceClip[]): PublicationMetadata {
   const draft=publicationDraft(project,clips)
   if(!value||typeof value!=='object')return draft
@@ -27,10 +34,8 @@ export function publicationMetadata(value: unknown, project: SourceProject, clip
   const description=typeof p.description==='string'?p.description.trim():''
   const hashtags=publicationHashtags(p.hashtags)
   if(!title||title.length>100||!description||description.length>5000||hashtags.length<3)return draft
-  const t=p.thumbnail
-  const thumbnail=t&&typeof t.headline==='string'&&typeof t.concept==='string'&&typeof t.prompt==='string'
-    &&t.headline.trim()&&t.headline.trim().length<=60&&t.concept.trim()&&t.concept.trim().length<=1500&&t.prompt.trim()&&t.prompt.trim().length<=5000
-    ?{headline:t.headline.trim(),concept:t.concept.trim(),prompt:t.prompt.trim()}:undefined
+  const parsed = thumbnailMetadata(p.thumbnail)
+  const thumbnail = parsed ? { ...parsed, sourceTitle: title, source: draft.source } : undefined
   return {...draft,title,description,hashtags,thumbnail,origin:'ai'}
 }
 

@@ -21,6 +21,7 @@ import { cameraPerspective, TRANSITIONS, transitionSecOf } from '@shared/motion'
 import { clipCaptionWords, musicSpan, voiceSpan } from '@shared/timeline'
 import { soundSpan } from '@shared/sound'
 import { validateImageFile } from './imageQuality'
+import { resolvePresentationOverlays } from '@shared/presentation'
 import { anchorOffset, contrastColor, overlayEnd, textEffects, textOverlayFrames } from '@shared/overlays'
 import type { Asset, Clip, ExportOptions, ImageOverlay, Job, ProjectBundle, TextOverlay } from '@shared/types'
 import { emit } from './events'
@@ -431,7 +432,7 @@ async function renderProject(ctx: TaskCtx, projectId: string, opts: ExportOption
     )
     const burn = opts.burnCaptions && !!style && chunks.length > 0
     // Overlays are part of the picture, so they are drawn even when captions are left out.
-    const overlays = bundle.project.editor.overlays ?? []
+    const overlays = resolvePresentationOverlays(bundle.project.editor.overlays ?? [], bundle.clips, Object.fromEntries(bundle.assets.map(a => [a.id, a])))
     const texts = overlays.filter((o): o is TextOverlay => o.kind === 'text' && (!!o.text.trim() || !!o.counter) && o.start < total)
     const images = overlays
       .filter((o): o is ImageOverlay => o.kind === 'image' && o.start < total)

@@ -1,6 +1,6 @@
 /** Keep a group resident until every known result is consumed; never route partial failures to a new account. */
 export interface BatchImageRequest { id: string; prompt: string; aspect: '16:9'|'9:16'; references: Buffer[]; fingerprint: string; identityKey: string }
-export type BatchImageResult = { id: string; bytes?: Buffer; error?: string }
+export type BatchImageResult = { id: string; bytes?: Buffer; error?: string; skipped?: boolean }
 export class FlowImageBatch {
   private requests = new Map<string,BatchImageRequest>()
   private results = new Map<string,BatchImageResult>()
@@ -9,7 +9,11 @@ export class FlowImageBatch {
   constructor(private ids:string[],private prepare:(id:string)=>BatchImageRequest,private send:(requests:BatchImageRequest[],signal:AbortSignal)=>Promise<BatchImageResult[]>,private size=10) {
     if(size<1||size>10||!Number.isInteger(size)||new Set(ids).size!==ids.length)throw new Error('Antrean gambar tidak valid.')
   }
-  canDrain(id:string):boolean { return !this.stopped||!!this.results.get(id)?.bytes }
+  canDrain(id:string):boolean {
+    const result=this.results.get(id)
+    // Keep the actual failed row visible; only tasks the worker never attempted are canceled.
+    return !this.stopped||!!result&&!result.skipped
+  }
   request(id:string):BatchImageRequest {
     const index=this.ids.indexOf(id)
     if(index<0)throw new Error('Klip tidak ada dalam antrean.')

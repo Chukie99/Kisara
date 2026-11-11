@@ -13,6 +13,7 @@ import { clipNumber, errorText, mmss } from '../../lib/format'
 import { useApp } from '../../store/app'
 import { useProject } from '../../store/project'
 import { sceneSpans } from '@shared/flow'
+import { PresentationPanel } from './PresentationPanel'
 import { FlowPanel } from './FlowPanel'
 
 /** A thin gap between scenes that offers to insert one there. */
@@ -332,6 +333,7 @@ export function ScriptStep() {
           <p className="text-xs leading-relaxed text-muted">Susun dan perbaiki naskah mencakup pemeriksaan alur lintas adegan lewat model penulis. Proses dapat memakai beberapa permintaan tambahan; belum memverifikasi fakta secara independen. Untuk naskah lama, gunakan Perbaiki naskah &amp; dialog lalu tinjau hasilnya.</p>
           {refining && <p role="status" className="rounded-lg border border-line bg-surface p-3 text-sm">Sedang memperbaiki naskah dan memeriksa alurnya. Naskah lama dipertahankan sampai hasil lengkap.</p>}
           {refineError && <p role="alert" className="rounded-lg bg-bad-soft p-3 text-sm text-bad-ink">Perbaikan belum diterapkan. {refineError}</p>}
+          <PresentationPanel disabled={!!busy || refining} onPlan={()=>void makeVisuals('missing')} onSelect={id=>{setScriptView('scenes');setFocusId(id)}} />
           {project.synopsis.trim() && (
             <div className="flex items-start gap-3 rounded-xl bg-sand px-4 py-3 text-[13px] text-ink-2">
               <span className="shrink-0 font-semibold text-ink">Ide awal</span>

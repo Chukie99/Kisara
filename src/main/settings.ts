@@ -4,7 +4,7 @@ import { getDb } from './db'
 import { randomUUID } from 'node:crypto'
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  flowVideoInputMode: 'agent',
+  flowVideoInputMode: 'frames',
   channelStyleEnabled: true,
   channelStyleDescription: 'Ilustrasi kartun 2D seperti referensi Kenzo: garis tegas bersih, warna lembut, bayangan sederhana. Semua NPC, bangunan, ruangan, tumbuhan dan benda memakai bahasa visual yang sama; jangan campur foto realistis, 3D atau stickman.',
   channelStyleReference: 'builtin-kenzo',
@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   channelCharacterName: 'Kenzo',
   channelCharacterDescription: 'Pria dewasa muda bergaya kartun, rambut hitam pendek berantakan, mata besar ekspresif, kulit sawo matang terang, kumis dan janggut tipis. Kemeja biru lengan pendek di atas kaus hitam, celana gelap dan sepatu hitam. Ikuti wajah, proporsi dan gaya gambar referensi Kenzo.',
   channelCharacterReference: 'builtin-kenzo',
+  customVisualStyles: [],
 
   defaultTtsProvider: 'gemini',
   defaultLanguage: 'id',

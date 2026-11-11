@@ -11,6 +11,7 @@ const {build}=require('esbuild'),assert=require('node:assert/strict'),path=requi
   if(!fail){assert.equal(calls.length,8);assert.deepEqual(calls.map(g=>g.length),[10,10,10,10,10,10,10,3]);assert.equal(done.length,73)}
   else{assert.equal(calls.length,1);assert.equal(done.length,9);assert(!done.includes('3'));assert(done.includes('9'));assert(!batch.canDrain('10'))}
  }
+ const known=new FlowImageBatch(['a','b','c'],prepare,async()=>[{id:'a',bytes:Buffer.from('a')},{id:'b',error:'Reference verification failed'},{id:'c',error:'Not attempted',skipped:true}]);await known.image('a',new AbortController().signal);assert(known.canDrain('b'));assert(!known.canDrain('c'));await assert.rejects(known.image('b',new AbortController().signal),/Reference verification failed/);
  let sent=0;const bad=new FlowImageBatch(['a','b'],prepare,async()=>{sent++;return [{id:'a',bytes:Buffer.from('x')},{id:'a',bytes:Buffer.from('y')}]});
  await assert.rejects(bad.image('a',new AbortController().signal),/Pemetaan/);assert(!bad.canDrain('b'));assert.equal(sent,1);
  const cancel=new AbortController();cancel.abort();const aborted=new FlowImageBatch(['a'],prepare,async(_,signal)=>{signal.throwIfAborted();throw Error('Must not submit')});await assert.rejects(aborted.image('a',cancel.signal));assert(!aborted.canDrain('a'));

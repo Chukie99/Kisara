@@ -1,3 +1,4 @@
+import { FlowVideoBatch } from './flowVideoBatch'
 import { FlowImageBatch, type BatchImageRequest } from './flowImageBatch'
 import { flowVideoPrompt } from '@shared/flow'
 import { normalizeFlowVideo } from './services/generatedVideo'
@@ -223,6 +224,11 @@ interface HfPayload {
   model: string
   prompt: string
   imageFingerprint?: string
+  videoSource?: string
+}
+
+function videoSource(project: Project, clip: Clip): string {
+  return JSON.stringify([clip.imageAssetId, clip.videoPrompt, project.aspectRatio, project.videoModel, project.videoResolution])
 }
 
 async function finishHiggsfield(ctx: TaskCtx, job: Job, requestId: string, payload: HfPayload): Promise<string> {
@@ -261,6 +267,11 @@ async function finishHiggsfield(ctx: TaskCtx, job: Job, requestId: string, paylo
     meta: payload.imageFingerprint ? { imageFingerprint: payload.imageFingerprint } : {}
   })
   emit.asset(asset)
+  if (job.clipId && (payload.imageFingerprint || payload.videoSource)) {
+    const current = getClip(job.clipId), project = getProject(job.projectId)
+    if ((payload.imageFingerprint && payload.imageFingerprint !== imageFingerprint(project, current, sceneCharacters(current, charactersOf(job.projectId)))) || (payload.videoSource && payload.videoSource !== videoSource(project, current)))
+      throw new Error('Adegan berubah saat Higgsfield bekerja. Hasil disimpan di riwayat dan belum dipasang.')
+  }
   if (payload.target === 'sheet' && job.characterId) {
     setCharacterSheet(job.characterId, asset.id)
     emit.character({ characterId: job.characterId, patch: { sheetAssetId: asset.id } })
@@ -446,25 +457,28 @@ function generateClipImageRemote(clipId: string, provider: 'cloudflare' | 'huggi
 
 function prepareFlowBatchImage(id:string):BatchImageRequest {
   const clip=getClip(id),project=getProject(clip.projectId),chars=sceneCharacters(clip,charactersOf(project.id))
-  const identity=channelCharacterBytes(),style=channelStyleBytes(),primary:Buffer[]=identity?[identity]:[]
+  const identity=channelCharacterBytes(),style=channelStyleBytes(project.styleId),primary:Buffer[]=identity?[identity]:[]
   let styleNumber=0
   if(style){if(identity&&sameReferenceImage(identity,style))styleNumber=1;else{primary.push(style);styleNumber=primary.length}}
   const assets=chars.map(c=>getAsset(c.sheetAssetId)).filter((a):a is Asset=>!!a).slice(0,3-primary.length)
-  const references=[...primary,...assets.map(a=>readFileSync(assetAbsPath(project.id,a.localPath)))]
+  const references:Buffer[]=[]
+  for(const bytes of [...primary,...assets.map(a=>readFileSync(assetAbsPath(project.id,a.localPath)))]){
+    if(!references.some(existing=>sameReferenceImage(existing,bytes))) references.push(bytes)
+  }
   if(references.some(b=>b.length>20*1024*1024))throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
-  return {id,aspect:project.aspectRatio,references,prompt:channelCharacterPrompt()+channelStylePrompt(styleNumber)+clipPrompt(project,clip,chars,chars.filter(c=>assets.some(a=>a.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style),fingerprint:imageFingerprint(project,clip,chars),identityKey:JSON.stringify([channelCharacterKey(),channelStyleKey()])}
+  return {id,aspect:project.aspectRatio,references,prompt:channelCharacterPrompt()+channelStylePrompt(styleNumber, project.styleId)+clipPrompt(project,clip,chars,chars.filter(c=>assets.some(a=>a.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style),fingerprint:imageFingerprint(project,clip,chars),identityKey:JSON.stringify([channelCharacterKey(),channelStyleKey(project.styleId)])}
 }
 
-/** Flow has its own serial queue, and never uploads its references to another image provider. */
-function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { gate: StopOnFailureBatch; settingsKey: string; parallel?: FlowImageBatch }, recover = false): Job {
+/** Images remain serial; bulk browser video leases independent accounts without sharing references. */
+function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { gate: StopOnFailureBatch; settingsKey: string; parallel?: FlowImageBatch; videos?: FlowVideoBatch }, recover = false): Job {
   const target = kind === 'sheet' ? {characterId:id} : {clipId:id}
   const active = activeJobFor(target, kind)
   if (active) return active
   const projectId = kind === 'sheet' ? getCharacter(id).projectId : getClip(id).projectId
   const job = insertJob({projectId,...target,kind,provider:'flow2api'})
   emit.job(job)
-  return runJob(job,'flow2api',async ctx=>{
-    const execute = async (): Promise<string> => {
+  return runJob(job,batch?.videos?'flow-video':'flow2api',async ctx=>{
+    const execute = async (account?: number): Promise<string> => {
     const project = getProject(projectId), settings = getSettings()
     if (batch && batch.settingsKey !== flowBatchSettings(project)) throw new Error('Pengaturan akun atau rasio berubah saat antrean berjalan. Antrean dihentikan; mulai lagi untuk gambar yang belum siap.')
     const clip = kind === 'sheet' ? null : getClip(id)
@@ -472,9 +486,9 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     const chars = clip ? sceneCharacters(clip, charactersOf(projectId)) : []
     const refs = kind === 'video' ? [getAsset(clip!.imageAssetId)] : chars.map(c=>getAsset(c.sheetAssetId)).filter(Boolean).slice(0,3)
     if (kind === 'video' && !refs[0]) throw new Error('Buat gambar adegan dulu sebelum membuat video Flow.')
-    let identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey()]) : ''
+    let identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey(project.styleId)]) : ''
     const identity = kind === 'image' ? channelCharacterBytes() : null
-    const style = kind === 'image' ? channelStyleBytes() : null
+    const style = kind === 'image' || kind === 'sheet' && project.styleId.startsWith('custom:') ? channelStyleBytes(project.styleId) : null
     const primary: Buffer[] = identity ? [identity] : []
     let styleNumber = 0
     if (style) {
@@ -484,13 +498,13 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     refs.splice(3 - primary.length)
     let images: Buffer[] = [...primary, ...refs.filter((a):a is Asset=>!!a).map(a=>readFileSync(assetAbsPath(projectId,a.localPath)))]
     if (images.some(b=>b.length>20*1024*1024)) throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
-    let prompt = kind === 'sheet' ? sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : flowVideoPrompt(clip!)
+    let prompt = kind === 'sheet' ? (project.styleId.startsWith('custom:') ? channelStylePrompt(styleNumber, project.styleId) : '') + sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber, project.styleId) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : flowVideoPrompt(clip!)
     let fingerprint = clip ? imageFingerprint(project,clip,chars) : ''
     if(batch?.parallel&&kind==='image'){const request=batch.parallel.request(id);images=request.references;prompt=request.prompt;fingerprint=request.fingerprint;identityKey=request.identityKey}
     ctx.progress(.2,recover?'Mengambil video yang sudah jadi di Flow…':settings.flowImageTransport==='browser'?(kind==='video'?'Menganimasikan gambar melalui Flow di Chrome…':'Membuat gambar melalui halaman Flow di Chrome…'):kind==='video'?'Flow sedang membuat gerak dari gambar awal…':'Flow sedang membuat gambar. Akun dipilih oleh backend lokal…')
     await ensureLocalFlow(settings.flowBaseUrl)
     ctx.signal.throwIfAborted()
-    const raw = batch?.parallel&&kind==='image' ? await batch.parallel.image(id,ctx.signal) : recover ? await flow2api.recoverVideo(ctx.signal) : await flow2api.generate(kind==='video'?'video':'image',prompt,project.aspectRatio,images,ctx.signal)
+    const raw = account ? await flow2api.generateAccountVideo(account,prompt,project.aspectRatio,images,ctx.signal) : batch?.parallel&&kind==='image' ? await batch.parallel.image(id,ctx.signal) : recover ? await flow2api.recoverVideo(ctx.signal) : await flow2api.generate(kind==='video'?'video':'image',prompt,project.aspectRatio,images,ctx.signal)
     const bytes = kind==='video'?await normalizeFlowVideo(raw,ctx.signal):await normalizeGeneratedImage(raw)
     ctx.signal.throwIfAborted()
     ctx.progress(.88,'Memeriksa dan menyimpan hasil Flow…')
@@ -505,7 +519,7 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
       setCharacterSheet(id,asset.id);emit.character({characterId:id,patch:{sheetAssetId:asset.id}})
     } else {
       const current=getClip(id)
-      if (kind === 'image' && JSON.stringify([channelCharacterKey(), channelStyleKey()]) !== identityKey) throw new Error('Karakter atau gaya visual berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
+      if (kind === 'image' && JSON.stringify([channelCharacterKey(), channelStyleKey(project.styleId)]) !== identityKey) throw new Error('Karakter atau gaya visual berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
       if (imageFingerprint(getProject(projectId),current,sceneCharacters(current,charactersOf(projectId)))!==fingerprint || (kind==='video'&&(current.imageAssetId!==clip!.imageAssetId||current.videoPrompt!==clip!.videoPrompt)))throw new Error('Adegan berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
       const patch=kind==='image'?{imageAssetId:asset.id}:{videoAssetId:asset.id,motionType:'video' as const,mediaInMs:0}
       patchClip(id,patch);emit.clip({clipId:id,patch})
@@ -514,6 +528,7 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     touchProject(projectId)
     return asset.id
     }
+    if(batch?.videos)return batch.videos.run(ctx.signal,()=>cancelJob(ctx.jobId),execute)
     if(batch?.parallel){if(!batch.parallel.canDrain(id)){await cancelJob(ctx.jobId);ctx.signal.throwIfAborted()}try{return await execute()}catch(error){batch.parallel.stop();throw error}}
     return batch ? batch.gate.run(ctx.signal, () => cancelJob(ctx.jobId), execute) : execute()
   })
@@ -558,15 +573,13 @@ export function generateClipVideo(clipId: string): Job {
     const model = getVideoModel(project.videoModel)
     ctx.progress(0.05, 'Menyiapkan gambar awal')
     const url = await publicUrlFor(image, ctx.signal)
-    let prompt =
-      fresh.videoPrompt.trim() ||
-      `${splitAvoid(fresh.visualPrompt).scene.replace(/\.$/, '')}. Subtle natural motion of the characters and environment, the camera slowly pushes in. Keep the art style of the first frame.`
+    let prompt = flowVideoPrompt(fresh)
     if (model.input.mode === 'reference')
       prompt = `Open on the exact scene of the reference image and keep its art style, characters and composition. ${prompt}`
     return {
       endpoint: model.id,
       body: videoBody(model, prompt, url, fresh.durationMs / 1000, project.aspectRatio, project.videoResolution),
-      payload: { target: 'clip-video', model: model.id, prompt }
+      payload: { target: 'clip-video', model: model.id, prompt, videoSource: videoSource(project, fresh) }
     }
   })
 }
@@ -700,7 +713,7 @@ export function storyExport(projectId: string): StoryExport {
  */
 function flowBatchSettings(project: Project): string {
   const settings = getSettings()
-  return JSON.stringify([settings.imageProvider, settings.flowImageTransport, settings.flowBaseUrl, settings.flowBrowserAccountId, project.aspectRatio, channelCharacterKey(), channelStyleKey()])
+  return JSON.stringify([settings.imageProvider, settings.flowImageTransport, settings.flowBaseUrl, settings.flowBrowserAccountId, project.aspectRatio, channelCharacterKey(), channelStyleKey(project.styleId)])
 }
 
 export function generateMissingImages(projectId: string, mode: 'missing' | 'all' = 'missing'): Job[] {
@@ -743,11 +756,14 @@ export function generateMissingImages(projectId: string, mode: 'missing' | 'all'
 }
 
 /** Turns every clip that has an image but no AI video yet into a video. */
-export function generateMissingVideos(projectId: string): Job[] {
+export async function generateMissingVideos(projectId: string): Promise<Job[]> {
   const clips = clipsOf(projectId)
   if (clips.some((c) => !c.imageAssetId)) throw new Error('Buat gambar semua klip dulu sebelum menjadikannya video.')
   if (getSettings().imageProvider === 'flow2api') {
-    const batch = { gate: new StopOnFailureBatch(), settingsKey: flowBatchSettings(getProject(projectId)) }
+    const settingsKey = flowBatchSettings(getProject(projectId))
+    const accounts = await flow2api.parallelVideoAccounts()
+    if (settingsKey !== flowBatchSettings(getProject(projectId))) throw new Error('Pengaturan Flow berubah saat memeriksa akun. Mulai lagi; video belum dikirim.')
+    const batch = { gate: new StopOnFailureBatch(), settingsKey, videos: accounts.length ? new FlowVideoBatch(accounts) : undefined }
     return clips.filter(c => !c.videoAssetId).map(c => generateFlowMedia(c.id, 'video', batch))
   }
   return clips.filter((c) => !c.videoAssetId).map((c) => generateClipVideo(c.id))

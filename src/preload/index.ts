@@ -24,6 +24,8 @@ const api: StudioApi = {
     duplicate: call('projects:duplicate')
   },
   story: {
+    thumbnail: call('story:thumbnail'),
+    presentationVersion: call('story:presentationVersion'),
     publication: call('story:publication'),
     exportPublication: call('story:exportPublication'),
     planContent: call('story:planContent'),
@@ -83,6 +85,9 @@ const api: StudioApi = {
     add: call('sfx:add')
   },
   settings: {
+    importCustomStyleReference: call('settings:importCustomStyleReference'),
+    customStylePreview: call('settings:customStylePreview'),
+    importChannelVisual: call('settings:importChannelVisual'),
     importChannelStyle: call('settings:importChannelStyle'),
     channelStylePreview: call('settings:channelStylePreview'),
     importChannelCharacter: call('settings:importChannelCharacter'),

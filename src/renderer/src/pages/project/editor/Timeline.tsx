@@ -9,7 +9,7 @@ import { cx } from '../../../components/ui'
 import { errorText, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
 import { useProject } from '../../../store/project'
-import { UNKNOWN_AUDIO_MS, updateOverlay, usePlayback, voiceWindow, type TimelineItem } from './engine'
+import { UNKNOWN_AUDIO_MS, updateOverlay, usePresentationOverlays, usePlayback, voiceWindow, type TimelineItem } from './engine'
 import { TransitionButton } from './TransitionButton'
 import { Waveform } from './Waveform'
 
@@ -171,7 +171,8 @@ export function Timeline({
   const step = TICK_STEPS.find((s) => s * pps >= 70) ?? 120
   const ticks: number[] = []
   for (let s = 0; s <= total + 0.001; s += step) ticks.push(s)
-  const lanes = overlayLanes(editor.overlays ?? [], total)
+  const presentationOverlays = usePresentationOverlays()
+  const lanes = overlayLanes(presentationOverlays, total)
   const ms = musicSpan(editor, total)
 
   // Edges snap to the playhead and to the joints between clips.

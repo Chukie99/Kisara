@@ -144,20 +144,21 @@ async function browserAccount(signal?:AbortSignal): Promise<number> {
   const setup = await flowSetup()
   return selectReadyBrowserAccount(setup.accounts.filter(a=>a.active&&a.workerConnected&&a.imageEnabled).map(a=>a.id),setup.accounts,signal)
 }
-async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspect: AspectRatio, references: Buffer[], signal: AbortSignal): Promise<Buffer> {
+async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspect: AspectRatio, references: Buffer[], signal: AbortSignal, pinnedAccount?: number): Promise<Buffer> {
   if (!['16:9','9:16'].includes(aspect) || references.length > 3 || (kind === 'video' && references.length !== 1)) throw new Error('Flow memerlukan rasio 16:9/9:16, maksimal tiga referensi gambar, atau tepat satu gambar awal untuk video.')
   const base = flowBase(getSettings().flowBaseUrl), key = requireSecret('flow2api'), guard = generationGuardBase()
   assertFlowNotPaused(guard)
   if ((references.length || kind === 'video') && (await flowSetup()).browserMediaVersion !== 2) throw new Error('Server Flow masih versi lama. Mulai ulang server Flow2API agar referensi karakter dan video terbaca. Permintaan belum dikirim.')
   if (kind === 'video' && getSettings().flowVideoInputMode === 'frames' && (await flowSetup()).browserFramesVersion !== 1) throw new Error('Mulai ulang server Flow2API untuk mengaktifkan mode Frames. Video belum dikirim.')
-  let accountId = await browserAccount(signal)
-  const automatic = !getSettings().flowBrowserAccountId
+  let accountId = pinnedAccount ? await selectReadyBrowserAccount([pinnedAccount], (await flowSetup()).accounts, signal) : await browserAccount(signal)
+  const automatic = !pinnedAccount && !getSettings().flowBrowserAccountId
   const trial = claimFlowAttempt(guard)
   let sent = false
   try {
     const attempted = new Set<number>()
     for (;;) {
       signal.throwIfAborted()
+      if (!trial) assertFlowNotPaused(guard)
       if (attempted.has(accountId)) throw new Error('Tidak ada akun Flow berikutnya yang siap.')
       attempted.add(accountId)
       sent = true
@@ -180,15 +181,15 @@ async function generateBrowserImage(kind: 'image'|'video', prompt: string, aspec
                   frames_mode_unavailable: 'Mode Frames belum terbuka di Flow. Buka prompt standar, pilih Video → Frames. Video belum dikirim.',
                   frames_settings_unverified: 'Rasio atau jumlah output mode Frames belum dapat dipastikan. Video belum dikirim.',
                   start_frame_unverified: 'Gambar adegan belum terverifikasi sebagai frame awal. Video belum dikirim.',
-                  reference_upload_failed: 'Gambar referensi belum selesai terpasang di Flow. Permintaan belum dikirim. Periksa lampiran di proyek Flow yang aktif.',
+                  reference_upload_failed: 'Referensi di Flow belum dapat dipasang atau diverifikasi. Generate belum ditekan. Muat ulang worker 1.6.2, lalu periksa lampiran di proyek Flow yang aktif.',
                   existing_attachments: 'Kotak prompt Flow masih berisi lampiran lain. Hapus lampiran lama sebelum mencoba lagi.',
                   video_model_not_verified: 'Pilih model video di pengaturan Flow, lalu coba lagi.',
                   native_input_unavailable: 'Klik Chrome belum tersedia. Muat ulang Flow2API Captcha Worker versi 1.3.0 dan setujui izin debugger bila Chrome memintanya. Tutup DevTools pada tab Flow; permintaan belum dikirim.',
                   submit_unconfirmed: 'Tombol kirim Flow sudah diklik, tetapi halaman belum mengonfirmasi pengiriman. Jangan kirim ulang dulu; periksa draft dan proses di Chrome.',
                   pending_timeout: 'Flow masih menunjukkan proses berjalan setelah batas tunggu. Tunggu hasil di Chrome; permintaan tidak diulang.',
                   result_timeout: 'Flow belum menampilkan gambar baru sampai batas tunggu. Periksa hasil di Chrome sebelum mengulang.',
-                  media_download_failed: 'Gambar sudah muncul di Flow, tetapi belum berhasil diunduh ke Kisara. Jangan buat ulang; periksa hasil di Chrome.',
-                  multiple_outputs: 'Flow menampilkan lebih dari satu gambar baru. Kisara belum dapat memilih hasil yang sesuai; periksa di Chrome sebelum mengulang.',
+                  media_download_failed: `${kind === 'video' ? 'Video' : 'Gambar'} sudah muncul di Flow, tetapi belum berhasil diunduh ke Kisara. Jangan buat ulang; periksa hasil di Chrome.`,
+                  multiple_outputs: `Flow menampilkan lebih dari satu hasil ${kind === 'video' ? 'video' : 'gambar'} baru. Kisara belum dapat memastikan hasil adegan ini; periksa di Chrome sebelum mengulang.`,
                   unsupported_input: 'Rasio atau panjang prompt Flow tidak didukung. Permintaan belum dikirim.',
                   prompt_not_found: 'Kotak prompt Flow belum ditemukan. Buka proyek Flow yang memiliki kotak prompt.',
                   settings_not_unique: 'Panel pengaturan Flow belum dapat dipastikan. Tutup menu lain di proyek Flow.',
@@ -385,7 +386,7 @@ export async function generateImageBatch(requests:BatchImageRequest[],signal:Abo
       else if(rows.some(r=>r.error&&r.submitted))pauseFlow(guard,'uncertain_result')
       const results:BatchImageResult[]=[]
       for(const row of rows){
-        if(row.error){results.push({id:row.id,error:row.error==='google_blocked'?'Google menolak aktivitas di Flow. Antrean dijeda; akun tidak diganti.':row.error==='batch_stopped'?'Belum dikirim karena kelompok dihentikan.':'Batch Flow berhenti: '+row.error+'. Periksa hasil di Chrome; permintaan tidak diulang.'});continue}
+        if(row.error){results.push({id:row.id,...(row.error==='batch_stopped'?{skipped:true}:{}),error:row.error==='google_blocked'?'Google menolak aktivitas di Flow. Antrean dijeda; akun tidak diganti.':row.error==='batch_stopped'?'Belum dikirim karena kelompok dihentikan.':row.error==='reference_upload_failed'&&row.submitted===false?'Referensi di Flow belum dapat dipasang atau diverifikasi. Generate belum ditekan; batch dihentikan. Muat ulang worker 1.6.2, lalu periksa lampiran. Gambar yang sudah berhasil tetap tersimpan.':'Batch Flow berhenti: '+row.error+'. Periksa hasil di Chrome; permintaan tidak diulang.'});continue}
         try{results.push({id:row.id,bytes:await media(base,key,row.mediaUrl!,timeout(signal,60000),'image')})}
         catch{pauseFlow(guard,'uncertain_result');results.push({id:row.id,error:'Hasil sudah dibuat tetapi belum diunduh. Periksa Flow; jangan buat ulang.'})}
       }
@@ -393,4 +394,33 @@ export async function generateImageBatch(requests:BatchImageRequest[],signal:Abo
       return results
     }catch(error){if(sent)pauseFlow(guard,'uncertain_result');throw error}
   }
+}
+
+/** Parallelism is only across independent workers; manual account selection remains serial. */
+export async function parallelVideoAccounts(): Promise<number[]> {
+  const settings = getSettings()
+  if (settings.flowImageTransport !== 'browser' || settings.flowBrowserAccountId) return []
+  assertFlowNotPaused(generationGuardBase())
+  if (flowPause(generationGuardBase())) return []
+  const setup = await flowSetup()
+  const candidates = setup.accounts.filter(a => a.active && a.workerConnected && a.imageEnabled && !a.browserBusy && !a.uncertainResult && !a.quotaExhausted && a.routeKey && setup.accounts.filter(b => b.routeKey === a.routeKey).length === 1)
+  if (setup.browserParallelVersion !== 1) {
+    if (candidates.length < 2) return []
+    throw new Error('Mulai ulang server Flow2API untuk mengaktifkan video paralel antar akun. Video belum dikirim.')
+  }
+  const ready: number[] = []
+  for (const account of candidates) {
+    let inspection: FlowBrowserInspection
+    try { inspection = await inspectFlowBrowser(account.id) }
+    catch (error) { if (error && typeof error === 'object' && 'flowPreflight' in error) continue; throw error }
+    const state = flowReadiness(inspection)
+    if (state.state === 'blocked') { pauseFlow(generationGuardBase(), 'unusual_activity'); throw new Error('Google menolak aktivitas pada akun Flow. Generasi dijeda; periksa di Chrome.') }
+    if (state.state === 'ready') ready.push(account.id)
+    if (ready.length === 3) break
+  }
+  if (!ready.length) throw new Error('Belum ada akun video Flow yang siap. Periksa Chrome dan hasil sebelumnya; video belum dikirim.')
+  return ready
+}
+export async function generateAccountVideo(account: number, prompt: string, aspect: AspectRatio, references: Buffer[], signal: AbortSignal): Promise<Buffer> {
+  return generateBrowserImage('video', prompt, aspect, references, signal, account)
 }

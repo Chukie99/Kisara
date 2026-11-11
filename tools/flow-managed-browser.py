@@ -36,7 +36,7 @@ def main():
  with sync_playwright() as pw:
   context=pw.chromium.launch_persistent_context(str(profile),executable_path=str(chromium[0]),headless=False,args=['--disable-extensions-except='+str(ext),'--load-extension='+str(ext)])
   worker=context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker',timeout=15000)
-  worker.evaluate('''async c=>{await chrome.storage.local.set({serverUrl:c.ws,apiKey:c.key,routeKey:c.route,clientLabel:c.email,uiLanguage:'id'});await globalThis.kisaraConfigure({apiUrl:c.base+'/api/plugin/update-token',connectionToken:c.connection,loginAccount:c.email,refreshInterval:60})}''',{'ws':base.replace('http://','ws://')+'/captcha_ws','key':cfg['key'],'route':cfg['routeKey'],'email':cfg['email'],'base':base,'connection':plugin['connection_token']})
+  worker.evaluate("async c=>{await chrome.storage.local.set({serverUrl:c.ws,apiKey:c.key,routeKey:c.route,loginAccount:c.email});await globalThis.kisaraConfigure({apiUrl:c.base+'/api/plugin/update-token',connectionToken:c.connection,routeKey:c.route,loginAccount:c.email,refreshInterval:60})}",{'ws':base.replace('http://','ws://')+'/captcha_ws','key':cfg['key'],'route':cfg['routeKey'],'email':cfg['email'],'base':base,'connection':plugin['connection_token']})
   page=context.pages[0] if context.pages else context.new_page()
   page.goto('https://flow.google.com/projects',wait_until='domcontentloaded',timeout=60000)
   report('login','Browser siap. Login Google dengan email '+cfg['email']+'. Kunci koneksi sudah diisi otomatis.')

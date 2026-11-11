@@ -21,13 +21,13 @@ export function sceneSpans(clips: Pick<Clip, 'id' | 'durationMs'>[]) {
 
 /** Shared by automatic I2V, the clipboard and manual Flow exports. */
 export function flowVideoPrompt(clip: Pick<Clip, 'videoPrompt' | 'narration'>): string {
-  const motion=stripVoiceTags(clip.videoPrompt || '').trim() || 'Use small natural gestures and subtle environmental motion appropriate to the supplied image.'
+  const motion=stripVoiceTags(clip.videoPrompt || '').trim() || 'Use small natural gestures only when physically possible from the supplied pose: one existing subject makes one restrained movement, then settles. Keep the camera and background still; do not invent an interaction or story event.'
   const narration=stripVoiceTags(clip.narration || '').trim()
   return [
     'Use the supplied scene image as the first frame. Preserve the exact character identities, faces, ages, proportions, hairstyles, wardrobe, background, props, composition and illustration style throughout the shot. The supplied image overrides conflicting descriptions or character names in the motion direction.',
     `Motion direction: ${motion}`,
-    'Animate the existing subjects or physical environment, not just a zoom or pan over a frozen picture. Keep motion modest, natural and consistent with the reference. One continuous shot, no cuts, montage, new people, duplicate characters, extra limbs, added objects or invented events.',
-    narration ? `Narrative context only (do not speak or display it): ${narration}` : '',
+    'Perform one primary action once: start from the visible pose, keep physical contact and object positions continuous, then settle and hold. If the requested action is impossible from this image, reduce it to a smaller plausible movement of an existing subject; never reset the scene or invent missing props. Keep secondary subjects and the background quiet unless their reaction is necessary. Camera locked unless the direction explicitly needs one gentle move. One continuous shot, no cuts, montage, new people, duplicate characters, extra limbs, added objects or invented events.',
+    narration ? `Narrative context only (do not speak or display it; do not turn abstract claims into literal events): ${narration}` : '',
     'Keep existing text and numbers in the supplied image stable and unchanged; do not add new labels, subtitles, numbers, logos or watermarks. Do not animate lips for narration. No spoken dialogue, voiceover, background music or soundtrack. Keep the original aspect ratio. Finish on a stable pose.'
   ].filter(Boolean).join('\n\n')
 }

@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
     raise AssertionError('worker did not answer')
    import base64
    reference='data:image/png;base64,'+base64.b64encode(png).decode()
-   for mode in ['reference','auto_model','replaced_model','missing_model','settings_open','delayed_start','delayed_save','delayed_upload_editor','library_reference','library_reuse','library_instant','library_dom','library_multi_cached','library_multi_upload','busy_then_idle','video','portrait_video','missing_controls_video','wrong_frame_video','changed_frame_video','upload_failure','existing_attachment','reuse_attachment','google_reference','wrong_google_reference','library_delayed_chip']:
+   for mode in ['reference','auto_model','replaced_model','missing_model','settings_open','delayed_start','delayed_save','delayed_upload_editor','library_reference','library_reuse','library_instant','library_dom','library_multi_cached','library_multi_upload','busy_then_idle','video','portrait_video','multi_thumbnail_video','old_tile_refresh_video','multiple_results_video','missing_controls_video','wrong_frame_video','changed_frame_video','upload_failure','existing_attachment','reuse_attachment','google_reference','wrong_google_reference','library_delayed_chip']:
     page.goto('https://flow.google.com/project/fixture');page.wait_for_load_state('networkidle')
     page.evaluate("""mode=>{
       document.querySelector('input[type=file]').onchange=e=>{window.uploaded=Array.from(e.target.files).map(f=>({name:f.name,type:f.type,size:f.size}));if(mode==='upload_failure')return;if(mode==='library_reference'){const file=e.target.files[0],pick=document.createElement('button'),add=document.createElement('button');pick.textContent=file.name+'Gambar';add.textContent='Tambahkan ke perintah';add.disabled=true;pick.onclick=ev=>{if(ev.isTrusted)add.disabled=false};add.onclick=ev=>{if(!ev.isTrusted)return;const img=document.createElement('img');img.src=URL.createObjectURL(file);document.querySelector('#composer').append(img);pick.remove();add.remove()};document.body.append(pick,add);return;}for(const f of e.target.files){const img=document.createElement('img');img.src=URL.createObjectURL(f);document.querySelector('#composer').append(img)}};
@@ -58,6 +58,16 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
        const options=document.createElement('section');options.id='video-options';options.hidden=true;
        for(const values of [['16:9','9:16'],['x1','x2']]){const g=document.createElement('div');g.setAttribute('role','radiogroup');for(const value of values){const b=document.createElement('button');b.textContent=value;b.setAttribute('aria-checked','false');b.onclick=ev=>{if(!ev.isTrusted)return;for(const c of g.children)c.setAttribute('aria-checked','false');b.setAttribute('aria-checked','true')};g.append(b)}options.append(g)}document.body.append(options);
      }""")
+    if mode in ['multi_thumbnail_video','old_tile_refresh_video','multiple_results_video']:
+     page.evaluate("""mode=>{
+      const original=window.finish;
+      if(mode==='old_tile_refresh_video'){const old=document.createElement('flow-video-tile');old.innerHTML='<img src="https://media.example.test/old.png"><video src="https://media.example.test/old.mp4"></video>';document.body.append(old);window.oldVideoTile=old;}
+      window.finish=()=>{original();const tile=[...document.querySelectorAll('flow-video-tile')].at(-1);
+       if(mode==='multi_thumbnail_video'){const hover=tile.querySelector('img').cloneNode();hover.dataset.mediaId='33333333-3333-3333-3333-333333333333';tile.append(hover);}
+       if(mode==='old_tile_refresh_video')window.oldVideoTile.querySelector('img').dataset.mediaId='44444444-4444-4444-4444-444444444444';
+       if(mode==='multiple_results_video'){const second=tile.cloneNode(true);second.querySelector('img').dataset.mediaId='55555555-5555-5555-5555-555555555555';document.body.append(second);}
+      };
+     }""",mode)
     if mode=='missing_controls_video':page.locator('#start-frame').evaluate('(e)=>e.remove()');page.locator('#composer button').filter(has_text='Veo 3.1').evaluate('(e)=>e.remove()')
     if mode=='wrong_frame_video':page.locator('#start-frame').evaluate("e=>{const img=new Image();img.src='https://media.example.test/existing.png';e.append(img)}");page.wait_for_timeout(400)
     if mode=='changed_frame_video':page.locator('[contenteditable=true]').evaluate("e=>e.addEventListener('input',()=>document.querySelector('#start-frame img')?.remove())")
@@ -89,10 +99,10 @@ with tempfile.TemporaryDirectory(prefix='browser-image-') as profile:
     video='video' in mode
     aspect='9:16' if mode=='portrait_video' else '16:9'
     result=request('generate_frames_video' if video else 'generate_reference_image',prompt='Kenzo saves money.',aspect=aspect,references=[reference,reference] if mode.startswith('library_multi') else [reference])
-    expected={'missing_model':'image_model_not_verified','upload_failure':'reference_upload_failed','existing_attachment':'existing_attachments','missing_controls_video':'frames_mode_unavailable','wrong_frame_video':'existing_attachments','changed_frame_video':'submit_not_ready','wrong_google_reference':'existing_attachments'}.get(mode)
+    expected={'missing_model':'image_model_not_verified','upload_failure':'reference_upload_failed','existing_attachment':'existing_attachments','multiple_results_video':'multiple_outputs','missing_controls_video':'frames_mode_unavailable','wrong_frame_video':'existing_attachments','changed_frame_video':'submit_not_ready','wrong_google_reference':'existing_attachments'}.get(mode)
     if expected:
      assert result['inspection']['failure']['code']==expected,result
-     assert page.evaluate('window.submits||0')==0
+     assert page.evaluate('window.submits||0')==(1 if mode=='multiple_results_video' else 0)
     else:
      assert result['inspection']['mediaUrl']=='https://media.example.test/result.'+('mp4' if video else 'png'),result
      assert page.evaluate('window.submits')==1

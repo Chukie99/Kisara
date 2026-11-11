@@ -1,3 +1,4 @@
+import { resolvePresentationOverlays } from '@shared/presentation'
 import { visualStatus } from './visualRuns'
 import { visualDraftFingerprint, writeVisualDraft } from './visualDrafts'
 import { randomUUID } from 'node:crypto'
@@ -229,7 +230,7 @@ export function attachDevHarness(win: BrowserWindow): void {
   const planPath = process.env.STUDIO_CAPTURE_PLAN
   if (!planPath) return
   let plan: {
-    main?: 'visualReviewChecks' | 'shotChecks' | 'mockBrainstorm' | 'mockFlowReadiness' | 'mockFlowTenBatch' | 'mockPublication' | 'publicationChecks' | 'mockFlowCanvasBatch' | 'recoverFlowVideo' | 'videoToolbar' | 'mockStyleUpload' | 'channelCharacter' | 'speakerLabels' | 'mockFlowBatch' | 'mockFlowProfiles' | 'mockNarrationAudit' | 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks' | 'mockComprehension'
+    main?: 'channelVisualChecks' | 'presentationChecks' | 'mockThumbnail' | 'visualReviewChecks' | 'shotChecks' | 'mockBrainstorm' | 'mockFlowReadiness' | 'mockFlowTenBatch' | 'mockPublication' | 'publicationChecks' | 'mockFlowCanvasBatch' | 'mockFlowParallelVideo' | 'recoverFlowVideo' | 'videoToolbar' | 'mockStyleUpload' | 'channelCharacter' | 'speakerLabels' | 'mockFlowBatch' | 'mockFlowProfiles' | 'mockNarrationAudit' | 'seed' | 'export' | 'key' | 'overlays' | 'speech' | 'videos' | 'sounds' | 'mockSounds' | 'quality' | 'dialogue' | 'mockImagePicker' | 'flow' | 'mockFlowSave' | 'mockPodcast' | 'mockScript' | 'mockVisuals' | 'mockWriter' | 'mockF5' | 'mockF5Local' | 'mockProductionTools' | 'mediaImportChecks' | 'mockComprehension'
     size?: [number, number]
     exportTo?: string
     /** For main "export": an existing project instead of the seeded demo. */
@@ -723,6 +724,56 @@ export function attachDevHarness(win: BrowserWindow): void {
           setSettings({ imageProvider: 'flow2api' })
           touchProject(demoId, { step: 3 })
         }
+        if (step.main === 'presentationChecks' && demoId) {
+          const seeded = getBundle(demoId)
+          patchClip(seeded.clips[0].id, { durationMs: 15000 })
+          const original = getBundle(demoId)
+          const copy = await win.webContents.executeJavaScript(`window.api.story.presentationVersion(${JSON.stringify(demoId)})`) as ReturnType<typeof getBundle>
+          assert.deepEqual(getBundle(demoId), original, 'Creating a production version must preserve the original')
+          assert(copy.clips.length > original.clips.length)
+          assert.equal(copy.clips.map(c => c.narration).join(''), original.clips.map(c => c.narration).join(''))
+          assert.equal(copy.clips.reduce((n,c) => n+c.durationMs,0), original.clips.reduce((n,c) => n+c.durationMs,0))
+          assert(copy.clips.every(c => !c.imageAssetId && !c.audioAssetId && !c.videoAssetId && !c.visualPrompt))
+          assert.equal(copy.project.coverAssetId, null)
+          assert.equal(copy.project.editor.captionStyle, 'none')
+          assert(copy.assets.every(a => a.projectId === copy.project.id))
+          assert(copy.assets.every(a => readFileSync(assetAbsPath(copy.project.id,a.localPath)).length > 0))
+          saveSnapshot({ project: seeded.project, characters: seeded.characters, clips: seeded.clips })
+          applyVisuals(demoId, [], seeded.clips.map((clip,index) => ({ clipId:clip.id, visualPrompt:'Setting: Majapahit.\nAction: '+clip.story, characterNames:[], cameraPreset:index%2?'static':'pushhold', motionStrength:'halus', videoPrompt:'Hold the existing pose; only a subtle breath.', transition:'cut', transitionMs:null,
+            presentation:{role: index===0?'situation':index===1?'detail':index===2?'reaction':'consequence',focus:['Memperlihatkan istana sebelum janji','Detail tangan dan langkah','Reaksi saat janji diucapkan','Akibat di balairung'][index],text:index===0?'TAHUN 1336':'',quote:index===0?'Tahun 1336.':''} })))
+          patchEditor(demoId,{captionStyle:'none'})
+          const result = getBundle(demoId), overlays=resolvePresentationOverlays(result.project.editor.overlays,result.clips,Object.fromEntries(result.assets.map(a=>[a.id,a])))
+          assert.equal(result.project.editor.presentation?.shots.length,4)
+          assert.equal(overlays.length,1);assert(overlays[0].start>=0 && (overlays[0].end??0)<result.clips[0].durationMs/1000)
+          patchEditor(demoId,{overlays:result.project.editor.overlays.map(o=>o.kind==='text'&&o.presentationCue?{...o,presentationCue:{...o.presentationCue,edited:true}}:o)})
+          const summary=await win.webContents.executeJavaScript(`window.api.projects.duplicate(${JSON.stringify(demoId)})`) as {id:string}
+          const duplicated=getBundle(summary.id), copiedCue=duplicated.project.editor.overlays.find(o=>o.kind==='text')
+          assert(copiedCue?.kind==='text'&&duplicated.clips.some(c=>c.id===copiedCue.presentationCue?.clipId))
+          assert(duplicated.project.editor.presentation?.shots.every(shot=>duplicated.clips.some(c=>c.id===shot.clipId)))
+          const first=duplicated.clips[0]
+          applyVisuals(summary.id,[],[{clipId:first.id,visualPrompt:first.visualPrompt,characterNames:[],cameraPreset:'static',motionStrength:'halus',videoPrompt:first.videoPrompt,transition:'cut',presentation:{role:'detail',focus:'Rencana diperbarui tanpa menimpa teks edit',text:'TAHUN 1336',quote:'Tahun 1336.'}}])
+          assert.equal(getBundle(summary.id).project.editor.overlays.length,1,'Replanning a duplicate must retain the edited cue without adding its replacement')
+          console.log('PRESENTATION NATIVE PASS: actual clone IPC, original unchanged, copied files, lossless short shots, cleared active media, SQLite shot roles and selective overlays resolved from audio words')
+        }
+        if (step.main === 'mockThumbnail' && demoId) {
+          const server=createServer(async(req,res)=>{
+            try {
+              let raw='';for await(const chunk of req)raw+=chunk
+              const body=JSON.parse(raw),system=body.messages.find((m:{role:string})=>m.role==='system')?.content
+              assert(system.includes('EXACTLY ONE'));assert(system.includes('same')||system.includes('SAME'))
+              const request=JSON.parse(body.messages.find((m:{role:string})=>m.role==='user').content)
+              assert.equal(request.selectedTitle,'Janji Besar, Siapa yang Bayar?')
+              res.setHeader('Content-Type','application/json')
+              res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({headline:'SIAPA YANG BAYAR?',concept:'Satu tokoh di depan janji besar, dengan reaksi para menteri sebagai latar sederhana.',prompt:'YouTube thumbnail, landscape 16:9 1280x720. Follow the supplied Gajah Mada character reference and project illustration style. One expressive focal face, cropped waist-up beside a raised hand; simple dark red palace background. Strong gold contrast, mobile-readable composition, safe margins. Large exact Indonesian headline: “SIAPA YANG BAYAR?”. No other text, invented figures or watermark.'})}}]}))
+            } catch(error) {console.error('THUMBNAIL FIXTURE ERROR',error);res.statusCode=500;res.end('{}')}
+          })
+          await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));server.unref()
+          const address=server.address();assert(address&&typeof address==='object')
+          setSettings({llmProvider:'custom',customBaseUrl:`http://127.0.0.1:${address.port}/v1`,llmModels:{...getSettings().llmModels,custom:'thumbnail-fixture'}})
+          const b=getBundle(demoId)
+          patchEditor(demoId,{publication:{title:'Janji Besar, Siapa yang Bayar?',description:'Deskripsi edit saya tetap tersimpan.',hashtags:['#Majapahit'],source:publicationSource(b.project,b.clips),origin:'edited'}})
+          touchProject(demoId,{step:2})
+        }
         if (step.main === 'mockPublication' && demoId) {
           const server=createServer(async(req,res)=>{
             let raw='';for await(const chunk of req)raw+=chunk
@@ -768,7 +819,7 @@ export function attachDevHarness(win: BrowserWindow): void {
               const body=JSON.parse(raw);assert(body.tasks.length<=10)
               groups.push({account:body.account_id,ids:body.tasks.map((t:{id:string})=>t.id)})
               const address=server.address();assert(address&&typeof address==='object')
-              res.end(JSON.stringify({results:body.tasks.toReversed().map((t:{id:string})=>({id:t.id,mediaUrl:`http://127.0.0.1:${address.port}/api/kisara/browser/media/${t.id}`,submitted:true}))}))
+              res.end(JSON.stringify({results:step.ok===false?body.tasks.map((t:{id:string},i:number)=>i===0?{id:t.id,mediaUrl:`http://127.0.0.1:${address.port}/api/kisara/browser/media/${t.id}`,submitted:true}:{id:t.id,error:i===1?'reference_upload_failed':'batch_stopped',submitted:false}):body.tasks.toReversed().map((t:{id:string})=>({id:t.id,mediaUrl:`http://127.0.0.1:${address.port}/api/kisara/browser/media/${t.id}`,submitted:true}))}))
             }catch(e){console.log('TEN FIXTURE ERROR',String(e));res.statusCode=500;res.end('{}')}
           })
           await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve))
@@ -778,30 +829,46 @@ export function attachDevHarness(win: BrowserWindow): void {
             setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBaseUrl:`http://127.0.0.1:${address.port}`,flowBrowserAccountId:0})
             const jobs=await win.webContents.executeJavaScript(`window.api.generate.missingImages(${JSON.stringify(demoId)})`,true)
             await Promise.all(jobs.map((job:{id:string})=>waitForJob(job.id)))
+            if(step.ok===false){
+              const result=getBundle(demoId)
+              assert.equal(result.clips.filter(c=>c.imageAssetId).length,1)
+              assert(result.jobs.some(j=>j.error?.includes('Generate belum ditekan')))
+              assert.equal(groups.length,1);assert.equal(groups[0].ids.length,10)
+              assert(result.jobs.every(j=>j.status!=='running'&&j.status!=='queued'))
+              console.log('REFERENCE FAILURE NATIVE PASS: actual IPC, one success retained, failure before Generate explained, no retry or second-account submission, remaining jobs stopped')
+            }else{
             for(const job of jobs){const result=getJob(job.id);assert.equal(result?.status,'done',result?.error||'Batch image failed')}
             const result=getBundle(demoId)
             assert.equal(result.clips.length,12);assert(result.clips.every(c=>c.imageAssetId))
             assert.deepEqual(groups.map(g=>g.ids.length),[10,2]);assert.notEqual(groups[0].account,groups[1].account)
             for(const clip of result.clips){const asset=result.assets.find(a=>a.id===clip.imageAssetId);assert.equal(asset?.clipId,clip.id);assert(asset?.prompt?.includes(clip.visualPrompt))}
             console.log('TEN NATIVE PASS: real IPC, twelve image jobs, 10+2 in two accounts, reversed results attached to correct clips, assets normalized and saved. Local fixture only.')
+            }
           }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()))}
         }
-        if (step.main === 'mockFlowCanvasBatch' && demoId) {
+        if (['mockFlowCanvasBatch','mockFlowParallelVideo'].includes(step.main || '') && demoId) {
+          const parallelVideo=step.main==='mockFlowParallelVideo'
           const downloads=join(app.getPath('userData'),'fixture-downloads'),previousDownloads=app.getPath('downloads')
           mkdirSync(downloads,{recursive:true});app.setPath('downloads',downloads)
           const input=readFileSync(join(app.getAppPath(),'tmp','bugcheck','canvas-input.mp4')),clips=getBundle(demoId).clips
-          let calls=0
+          let calls=0,activeVideos=0,peakVideos=0
+          const busyAccounts=new Set<number>(),completionOrder:number[]=[]
           const server=createServer(async(req,res)=>{
             res.setHeader('Content-Type','application/json')
-            if(req.url==='/api/kisara/status'){res.end(JSON.stringify({browserMediaVersion:2,extensionMode:true,workers:[],accounts:[{id:1,email:'canvas@example.test',routeKey:'fixture',workerConnected:true,active:true,imageEnabled:true}]}));return}
+            if(req.url==='/api/kisara/status'){res.end(JSON.stringify({browserParallelVersion:1,browserFramesVersion:1,browserMediaVersion:2,extensionMode:true,workers:[],accounts:(parallelVideo?[1,2,3]:[1]).map(id=>({id,email:`canvas${id}@example.test`,routeKey:`fixture${id}`,workerConnected:true,active:true,imageEnabled:true}))}));return}
             if(req.url==='/api/kisara/browser/inspect'){res.end(JSON.stringify({host:'flow.google.com',projectOpen:true,blocked:false,composer:{editors:1,draftLength:0,submitCount:1,submitDisabled:true,busy:false,online:true},fields:[],buttons:[],options:[]}));return}
             if(req.url!=='/api/kisara/browser/image'){res.statusCode=404;res.end('{}');return}
             try{
               let raw='';for await(const chunk of req)raw+=chunk
-              const body=JSON.parse(raw),clip=clips[calls]
-              assert.equal(body.kind,'video');assert.equal(body.recover,undefined);assert.equal(body.references.length,1)
+              const body=JSON.parse(raw),clip=parallelVideo?clips.find(c=>flowVideoPrompt(c)===body.prompt)!:clips[calls]
+              assert.equal(body.kind,'video');assert.equal(body.video_input_mode,'frames');assert.equal(body.recover,undefined);assert.equal(body.references.length,1)
               assert.equal(body.prompt,flowVideoPrompt(clip))
-              const path=join(downloads,`canvas-${++calls}.mp4`);writeFileSync(path,input)
+              assert(clip);assert(!busyAccounts.has(body.account_id));busyAccounts.add(body.account_id)
+              if(parallelVideo&&calls>=3)assert(getBundle(clip.projectId).clips.some(c=>c.videoAssetId),'Completed videos must be attached before the whole batch finishes')
+              const call=++calls;peakVideos=Math.max(peakVideos,++activeVideos)
+              if(parallelVideo)await new Promise<void>(resolve=>setTimeout(resolve,call===1?700:180))
+              completionOrder.push(call);activeVideos--;busyAccounts.delete(body.account_id)
+              const path=join(downloads,`canvas-${call}.mp4`);writeFileSync(path,input)
               res.end(JSON.stringify({downloadFile:{path,size:input.length}}))
             }catch{res.statusCode=500;res.end('{}')}
           })
@@ -809,7 +876,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           try{
             const address=server.address();assert(address&&typeof address==='object')
             setSecret('flow2api','synthetic-canvas-key')
-            setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBaseUrl:`http://127.0.0.1:${address.port}`,flowBrowserAccountId:1})
+            setSettings({imageProvider:'flow2api',flowImageTransport:'browser',flowBaseUrl:`http://127.0.0.1:${address.port}`,flowBrowserAccountId:parallelVideo?0:1})
             const jobs=await win.webContents.executeJavaScript(`window.api.generate.missingVideos(${JSON.stringify(demoId)})`,true)
             await Promise.all(jobs.map((job:{id:string})=>waitForJob(job.id)))
             for(const job of jobs){const result=getJob(job.id);assert.equal(result?.status,'done',result?.error || 'Canvas batch failed')}
@@ -817,6 +884,7 @@ export function attachDevHarness(win: BrowserWindow): void {
             assert.equal(calls,clips.length)
             assert(result.clips.every(c=>c.videoAssetId&&c.motionType==='video'))
             assert(result.assets.filter(a=>a.kind==='video').every(a=>a.durationMs&&a.durationMs>100))
+            if(parallelVideo){assert.equal(peakVideos,3);assert.notEqual(completionOrder[0],1);for(const clip of result.clips){const asset=result.assets.find(a=>a.id===clip.videoAssetId);assert.equal(asset?.clipId,clip.id);assert.equal(asset?.prompt,flowVideoPrompt(clip))};console.log('PARALLEL VIDEO NATIVE PASS: three simultaneous independent accounts, out-of-order completion, correct clips and persisted normalized MP4 assets')}
             console.log('CANVAS BATCH NATIVE PASS: four ordered I2V jobs, shared prompt, one reference each, downloaded files normalized and attached; no TTS or Google requests')
           }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));app.setPath('downloads',previousDownloads)}
         }
@@ -835,6 +903,66 @@ export function attachDevHarness(win: BrowserWindow): void {
           assert.equal(asset?.kind,'video')
           assert.ok(asset?.durationMs && asset.durationMs>100)
           console.log('RECOVERY NATIVE PASS: actual IPC, existing Flow MP4, normalization, asset saved, video attached to isolated clip')
+        }
+        if (step.main === 'channelVisualChecks' && demoId) {
+          const initial = getBundle(demoId), clip = initial.clips[0]
+          const sample = assetAbsPath(demoId, initial.assets.find(a => a.id === clip.imageAssetId)!.localPath)
+          const bytes = readFileSync(sample)
+          dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [sample] })
+          await win.webContents.executeJavaScript('window.api.settings.importChannelVisual()', true)
+          const selected = getSettings()
+          assert.equal(selected.channelCharacterReference, selected.channelStyleReference)
+          assert(!selected.channelCharacterDescription.includes('Kenzo'))
+          assert(!selected.channelStyleDescription.includes('Kenzo'))
+          assert(sameReferenceImage(channelCharacterBytes()!, bytes))
+          const reference = channelCharacterBytes()!.toString('base64')
+          dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+          assert.equal(await win.webContents.executeJavaScript('window.api.settings.importChannelVisual()', true), null)
+          assert.equal(getSettings().channelCharacterReference, selected.channelCharacterReference)
+          let singles = 0, batches = 0
+          const prompts: string[] = []
+          const server = createServer(async (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            if (req.url === '/api/kisara/status') { res.end(JSON.stringify({ browserBatchVersion: 1, browserMediaVersion: 2, extensionMode: true, workers: [], accounts: [{ id: 1, email: 'fixture@example.test', routeKey: 'fixture', workerConnected: true, active: true, imageEnabled: true }] })); return }
+            if (req.url === '/api/kisara/browser/inspect') { res.end(JSON.stringify({ host: 'flow.google.com', projectOpen: true, blocked: false, composer: { editors: 1, draftLength: 0, submitCount: 1, submitDisabled: true, busy: false, online: true }, fields: [], buttons: [], options: [] })); return }
+            try {
+              let raw = ''; for await (const chunk of req) raw += chunk
+              const body = JSON.parse(raw)
+              assert(['/api/kisara/browser/image', '/api/kisara/browser/image-batch'].includes(req.url!))
+              const batch = req.url!.endsWith('image-batch')
+              if (batch) batches++; else singles++
+              for (const task of batch ? body.tasks : [body]) {
+                assert.equal(task.references.length, 1, 'Shared character/style must be attached only once')
+                assert.equal(task.references[0].split(',')[1], reference)
+                assert(!task.prompt.includes('Kenzo'), 'Old identity must not survive a replacement')
+                assert(task.prompt.includes('FIRST attached image'))
+                prompts.push(task.prompt)
+              }
+              const mediaUrl = 'data:image/png;base64,' + bytes.toString('base64')
+              res.end(JSON.stringify(batch ? { results: body.tasks.map((t: { id: string }) => ({ id: t.id, mediaUrl, submitted: true })) } : { mediaUrl }))
+            } catch (error) { console.log('CHARACTER FIXTURE ERROR', String(error)); res.statusCode = 500; res.end('{}') }
+          })
+          await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+          try {
+            const address = server.address(); assert(address && typeof address === 'object')
+            setSecret('flow2api', 'synthetic-character-key')
+            setSettings({ imageProvider: 'flow2api', flowImageTransport: 'browser', flowBaseUrl: `http://127.0.0.1:${address.port}`, flowBrowserAccountId: 1 })
+            for (const action of ['opens a notebook', 'walks in a garden']) {
+              const bundle = getBundle(demoId)
+              saveSnapshot({ ...bundle, clips: bundle.clips.map(c => c.id === clip.id ? { ...c, visualPrompt: `Action: The main character ${action}.` } : c) })
+              const job = await win.webContents.executeJavaScript(`window.api.generate.clipImage(${JSON.stringify(clip.id)})`, true)
+              await waitForJob(job.id); assert.equal(getJob(job.id)?.status, 'done', getJob(job.id)?.error || '')
+            }
+            assert.notEqual(prompts[0], prompts[1])
+            for (const item of getBundle(demoId).clips) patchClip(item.id, { imageAssetId: null })
+            const jobs = await win.webContents.executeJavaScript(`window.api.generate.missingImages(${JSON.stringify(demoId)})`, true)
+            await Promise.all(jobs.map((job: { id: string }) => waitForJob(job.id)))
+            for (const job of jobs) assert.equal(getJob(job.id)?.status, 'done', getJob(job.id)?.error || '')
+            assert.equal(singles, 2); assert.equal(batches, 1)
+            assert.equal(getSettings().channelCharacterReference, selected.channelCharacterReference)
+            console.log('CHANNEL VISUAL NATIVE PASS: atomic upload via IPC, canceled upload preserves selection, changed scene prompts retain one exact reference in single and batch requests, no old Kenzo description, generated fixture assets saved. No external generation.')
+          } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+          setSettings({ imageProvider: 'higgsfield' })
         }
         if (step.main === 'mockStyleUpload') {
           const file = join(app.getAppPath(), 'resources', 'kenzo.png')
@@ -884,7 +1012,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           recordCheck(step.provider, step.ok !== false, step.ok === false ? 'Kunci ditolak (uji)' : 'Terhubung (uji)')
         }
         if (step.main === 'export' && (step.projectId ?? demoId)) {
-          startExport((step.projectId ?? demoId)!, {
+          const exportJob = startExport((step.projectId ?? demoId)!, {
             fileName: 'demo-export',
             resolution: 1080,
             fps: 30,
@@ -894,6 +1022,7 @@ export function attachDevHarness(win: BrowserWindow): void {
             duckMusic: true,
             folder: step.exportTo ?? app.getPath('temp')
           })
+          if (step.ok) { await waitForJob(exportJob.id); assert.equal(getJob(exportJob.id)?.status, 'done'); console.log('NATIVE EXPORT DONE '+exportJob.id) }
         }
         if (step.js) await win.webContents.executeJavaScript(step.js, true)
         if (step.drag || step.click) {

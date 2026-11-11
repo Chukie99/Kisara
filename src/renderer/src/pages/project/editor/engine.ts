@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { create } from 'zustand'
 import { timelineChunks, type CaptionChunk } from '@shared/captions'
 import { transitionSecOf } from '@shared/motion'
+import { resolvePresentationOverlays } from '@shared/presentation'
 import { soundSpan } from '@shared/sound'
 import { clipCaptionWords, voiceSpan } from '@shared/timeline'
 import type { Asset, Clip, Overlay, TransitionId } from '@shared/types'
@@ -92,7 +93,20 @@ export function addOverlay(o: Overlay): void {
 }
 
 export function updateOverlay(id: string, patch: Partial<Overlay>): void {
-  useProject.getState().updateEditor({ overlays: overlaysNow().map((o) => (o.id === id ? ({ ...o, ...patch } as Overlay) : o)) })
+  const state = useProject.getState()
+  const resolved = resolvePresentationOverlays(overlaysNow(), state.clips, state.assets).find(o => o.id === id)
+  state.updateEditor({ overlays: overlaysNow().map(o => {
+    if (o.id !== id) return o
+    const next = { ...(resolved ?? o), ...patch } as Overlay
+    if (next.kind === 'text' && next.presentationCue)
+      next.presentationCue = 'start' in patch || 'end' in patch ? undefined : { ...next.presentationCue, edited: true }
+    return next
+  }) })
+}
+
+export function usePresentationOverlays(): Overlay[] {
+  const { project, clips, assets } = useProject()
+  return useMemo(() => resolvePresentationOverlays(project?.editor.overlays ?? [], clips, assets), [project?.editor.overlays, clips, assets])
 }
 
 export function removeOverlay(id: string): void {

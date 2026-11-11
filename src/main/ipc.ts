@@ -1,4 +1,5 @@
-import { generatePublication } from './publication'
+import { createPresentationVersion } from './presentation'
+import { generatePublication, generateThumbnail } from './publication'
 import { publicationDraft, publicationSource, publicationText } from '@shared/publication'
 import { importChannelCharacter, channelCharacterPreview, channelStylePreview } from './channelCharacter'
 import { flowProfiles, openFlowProfile } from './services/flowProfiles'
@@ -167,10 +168,13 @@ export function registerIpc(): void {
   handle('projects:remove', (id: string) => removeProject(id))
   handle('projects:duplicate', (id: string) => duplicateProject(id))
 
+  handle('story:presentationVersion', (projectId: string) => createPresentationVersion(projectId))
+  handle('story:thumbnail', (projectId: string, title?: string) => generateThumbnail(projectId, title))
   handle('story:publication', (projectId: string) => generatePublication(projectId))
   handle('story:exportPublication', async (projectId: string) => {
     const b=getBundle(projectId),metadata=b.project.editor.publication || publicationDraft(b.project,b.clips)
     if(metadata.source!==publicationSource(b.project,b.clips))throw new Error('Naskah sudah berubah. Perbarui paket publikasi dulu sebelum menyimpan TXT.')
+    if(metadata.thumbnail && ((metadata.thumbnail.source ?? metadata.source)!==publicationSource(b.project,b.clips) || (metadata.thumbnail.sourceTitle && metadata.thumbnail.sourceTitle!==metadata.title)))throw new Error('Judul atau naskah berubah. Perbarui prompt thumbnail sebelum menyimpan TXT.')
     if(!metadata.title.trim()||!metadata.description.trim())throw new Error('Lengkapi judul dan deskripsi sebelum menyimpan paket publikasi.')
     const win=BrowserWindow.getFocusedWindow()
     const res=await dialog.showSaveDialog(win!,{title:'Simpan judul, deskripsi dan hashtag',defaultPath:b.project.title.replace(/[<>:"/\\|?*]/g,' ').slice(0,90)+' - Publikasi.txt',filters:[{name:'Teks',extensions:['txt']}]})
@@ -441,7 +445,24 @@ export function registerIpc(): void {
     return asset
   })
 
+  handle('settings:importCustomStyleReference', async () => {
+    const result = await dialog.showOpenDialog({ title: 'Gambar contoh gaya custom', properties: ['openFile'], filters: [{ name: 'Gambar', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
+    if (result.canceled || !result.filePaths[0]) return null
+    const { importStyleReference, referenceBytes } = await import('./channelCharacter')
+    const reference = await importStyleReference(result.filePaths[0])
+    return { reference, preview: 'data:image/png;base64,' + referenceBytes(reference).toString('base64') }
+  })
+  handle('settings:customStylePreview', async (reference: string) => {
+    const { referenceBytes } = await import('./channelCharacter')
+    return 'data:image/png;base64,' + referenceBytes(reference).toString('base64')
+  })
   handle('settings:channelStylePreview', () => channelStylePreview())
+  handle('settings:importChannelVisual', async () => {
+    const result = await dialog.showOpenDialog({ title: 'Upload karakter dan gaya visual', properties: ['openFile'], filters: [{ name: 'Gambar karakter dan gaya', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
+    if (result.canceled || !result.filePaths[0]) return null
+    await importChannelCharacter(result.filePaths[0], 'visual')
+    return getSettings()
+  })
   handle('settings:importChannelStyle', async () => {
     const result = await dialog.showOpenDialog({ title: 'Upload referensi gaya visual', properties: ['openFile'], filters: [{ name: 'Referensi gaya', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
     if (result.canceled || !result.filePaths[0]) return null

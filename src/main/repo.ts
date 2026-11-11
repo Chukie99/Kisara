@@ -18,6 +18,7 @@ import type {
   ProjectSnapshot,
   ProjectSummary
 } from '@shared/types'
+import { presentationOverlay } from '@shared/presentation'
 import { defaultVoiceFor } from '@shared/models'
 import { visualSourceOf } from '@shared/script'
 import { canDivideVisual, visualShotParts } from '@shared/visualShots'
@@ -28,7 +29,7 @@ import { getSettings } from './settings'
 import { emit } from './events'
 
 export const DEFAULT_EDITOR: EditorSettings = {
-  captionStyle: 'karaoke',
+  captionStyle: 'none',
   captionPosition: 'bawah',
   captionSize: 'sedang',
   musicAssetId: null,
@@ -387,7 +388,8 @@ export function duplicateProject(id: string): ProjectSummary {
     const editor: EditorSettings = {
       ...src.project.editor,
       musicAssetId: mapId(src.project.editor.musicAssetId),
-      overlays: src.project.editor.overlays.map((o) => o.kind === 'image' ? { ...o, assetId: mapId(o.assetId)! } : o),
+      overlays: src.project.editor.overlays.map((o) => o.kind === 'image' ? { ...o, assetId: mapId(o.assetId)! } : o.presentationCue ? { ...o, presentationCue: { ...o.presentationCue, clipId: mapId(o.presentationCue.clipId)! } } : o),
+      presentation: src.project.editor.presentation ? { ...src.project.editor.presentation, shots: src.project.editor.presentation.shots.map(shot => ({ ...shot, clipId: mapId(shot.clipId)! })) } : undefined,
       sfx: (src.project.editor.sfx ?? []).map((fx) => ({ ...fx, assetId: mapId(fx.assetId)!, ...(fx.clipId ? { clipId: mapId(fx.clipId)! } : {}) })),
       soundPlan: src.project.editor.soundPlan?.map((cue) => ({ ...cue, clipId: mapId(cue.clipId)! }))
     }
@@ -508,6 +510,8 @@ export function replaceScript(projectId: string, title: string, scenes: ScriptSc
 }
 
 export interface SceneVisual {
+  presentation?: { role: import('@shared/types').ShotRole; focus: string; text: string; quote: string }
+  transitionMs?: number | null
   clipId: string
   visualPrompt: string
   characterNames: string[]
@@ -599,7 +603,7 @@ export function applyVisuals(projectId: string, characters: { name: string; desc
     }
     const update = db.prepare(
       `UPDATE clips SET visual_prompt = @visualPrompt, visual_source = @visualSource, character_ids = @characterIds,
-         camera_preset = @cameraPreset, motion_strength = @motionStrength, video_prompt = @videoPrompt, transition = @transition
+         camera_preset = @cameraPreset, motion_strength = @motionStrength, video_prompt = @videoPrompt, transition = @transition, transition_ms = @transitionMs
        WHERE id = @clipId AND project_id = @projectId`
     )
     for (const v of scenes) {
@@ -608,7 +612,20 @@ export function applyVisuals(projectId: string, characters: { name: string; desc
       if (unknown.length) throw new Error(`Pemeran visual belum dikenali: ${unknown.join(', ')}. Susun ulang visual dengan nama pemeran yang sama.`)
       const visible = v.visualPrompt.split('\n').filter((line) => /^(?:Action|Wardrobe):/i.test(line.trim())).join(' ')
       const ids = [...new Set([...v.characterNames.map((name) => resolveCharacter(name, roster)!), ...charactersMentioned(visible, roster)])]
-      update.run({ ...v, projectId, visualSource: visualSourceOf(clip), characterIds: JSON.stringify(ids) })
+      update.run({ ...v, transitionMs: v.transitionMs ?? clip.transitionMs, projectId, visualSource: visualSourceOf(clip), characterIds: JSON.stringify(ids) })
+    }
+    const planned = scenes.filter(v => v.presentation)
+    if (planned.length) {
+      const editor = getProject(projectId).editor, ids = new Set(planned.map(v => v.clipId))
+      const overlays = (editor.overlays ?? []).filter(o => o.kind !== 'text' || !o.presentationCue || o.presentationCue.edited || !ids.has(o.presentationCue.clipId))
+      let count = overlays.filter(o => o.kind === 'text' && o.presentationCue && !o.presentationCue.edited).length
+      const limit = Math.floor(clipsOf(projectId).length * .45)
+      for (const v of planned) {
+        const p = v.presentation!, cue = presentationOverlay(getClip(v.clipId), p.text, p.quote, getProject(projectId).language)
+        if (cue && count < limit && !overlays.some(o => o.id === cue.id || (o.kind === 'text' && o.presentationCue?.clipId === v.clipId))) { overlays.push(cue); count++ }
+      }
+      const shots = [...(editor.presentation?.shots ?? []).filter(shot => !ids.has(shot.clipId)), ...planned.map(v => ({ clipId: v.clipId, role: v.presentation!.role, focus: v.presentation!.focus }))]
+      patchEditor(projectId, { presentation: { version: 1, shots }, overlays })
     }
     db.prepare(
       "UPDATE projects SET status = CASE WHEN status IN ('draft', 'script') THEN 'storyboard' ELSE status END, step = 3, updated_at = ? WHERE id = ?"

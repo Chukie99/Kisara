@@ -1,5 +1,5 @@
 diff --git a/extension/background.js b/extension/background.js
-index 517e3f6..50914c4 100644
+index 517e3f6..40e0116 100644
 --- a/extension/background.js
 +++ b/extension/background.js
 @@ -1,9 +1,11 @@
@@ -320,7 +320,7 @@ index 517e3f6..50914c4 100644
 +            const senderUrl=new URL(_sender.url||'');
 +            if(_sender.id!==chrome.runtime.id||!_sender.tab?.id||senderUrl.origin!=='https://flow.google.com'||!senderUrl.pathname.startsWith('/project/'))throw new Error('reference_upload_failed');
 +            const source=new URL(message.url);
-+            if(source.protocol!=='https:'||source.hostname!=='lh3.googleusercontent.com'||source.username||source.password||source.port)throw new Error('reference_upload_failed');
++            if(source.protocol!=='https:'||!['lh3.googleusercontent.com','flow-content.google'].includes(source.hostname)||source.username||source.password||source.port)throw new Error('reference_upload_failed');
 +            const response=await fetch(source.href,{credentials:'omit',redirect:'error',signal:AbortSignal.timeout(10000)});
 +            if(!response.ok||!response.headers.get('content-type')?.startsWith('image/'))throw new Error('reference_upload_failed');
 +            const reader=response.body.getReader(),chunks=[];let size=0;
@@ -347,10 +347,10 @@ index 517e3f6..50914c4 100644
      if (changes.routeKey || changes.serverUrl || changes.apiKey || changes.clientLabel) {
 diff --git a/extension/browser-ui.js b/extension/browser-ui.js
 new file mode 100644
-index 0000000..1d0a00a
+index 0000000..f6f460d
 --- /dev/null
 +++ b/extension/browser-ui.js
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,623 @@
 +// Operate visible controls in the extension's isolated world; never call private Google RPCs.
 +// Map only a labelled response owned by this batch. Numbered Flow options are explicit indexes, not DOM order.
 +globalThis.kisaraFlowBatchImages = (key,ids,aspect,expand=false) => {
@@ -401,7 +401,7 @@ index 0000000..1d0a00a
 +      // Loaded Google thumbnails can be visible while page-world CORS denies fetching them.
 +      // The extension reads only the allowed image host, then returns pixels, never credentials.
 +      let source;try{source=new URL(url)}catch{throw new Error('reference_upload_failed')}
-+      if(source.protocol!=='https:'||source.hostname!=='lh3.googleusercontent.com')throw new Error('reference_upload_failed');
++      if(source.protocol!=='https:'||!['lh3.googleusercontent.com','flow-content.google'].includes(source.hostname))throw new Error('reference_upload_failed');
 +      const result=await chrome.runtime.sendMessage({type:'flow_reference_pixels',url:source.href});
 +      if(!result?.ok||!Array.isArray(result.pixels)||result.pixels.length!==64*64*4)throw new Error('reference_upload_failed');
 +      return result.pixels;
@@ -441,7 +441,7 @@ index 0000000..1d0a00a
 +    }
 +    throw new Error('browser_busy');
 +  };
-+  const snapshot = () => ({ pending: [...document.querySelectorAll('flow-stop-icon-button,flow-pending-tile')].filter(visible).map(e=>({tag:e.tagName,parent:e.parentElement.tagName,text:clean(e.textContent)})), uploads: { inputs: [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple,parent:e.parentElement.tagName})), ancestry: editors().flatMap(e=>{const a=[];for(let p=e,n=0;p&&n<7;p=p.parentElement,n++)a.push({tag:p.tagName,classes:clean(p.className),images:p.querySelectorAll('img').length});return a}) }, composer: { editors: editors().length, draftLength: editors().reduce((n,e) => n + (e.textContent || '').length, 0), submitCount: submitButtons().length, submitDisabled: submitButtons().some(disabled), busy: busy(), online: navigator.onLine }, host: location.hostname, projectOpen: /^\/project\/[^/]+/.test(location.pathname), blocked: blocked(), fields: [...document.querySelectorAll('video')].map(e=>({tag:'video',role:e.parentElement.tagName,label:JSON.stringify({loop:e.loop,duration:Number.isFinite(e.duration)?e.duration:null,width:e.videoWidth,height:e.videoHeight}),placeholder:(e.currentSrc||e.src?new URL(e.currentSrc||e.src).hostname:'no-source')+' '+clean(e.className)})).concat([...document.querySelectorAll('flow-video-tile')].map((e,i)=>({tag:'video-tile',role:String(i),label:clean(e.textContent||e.getAttribute('aria-label')),placeholder:(visible(e)?'visible':'hidden')+' '+[...e.attributes].map(a=>a.name).join(',')})).concat([...document.querySelectorAll('textarea,input:not([type="password"]),[contenteditable="true"],flow-base-prompt-box img,flow-image-tile img,flow-video-tile img')].filter(visible).slice(0, 12).map(e => ({ tag: e.tagName.toLowerCase(), role: e.getAttribute('role') || '', label: clean(e.getAttribute('aria-label') || e.getAttribute('alt')), placeholder: clean(e.tagName==='IMG' ? e.naturalWidth+'x'+e.naturalHeight+' '+(e.src.includes('/asb/')?'asb':'other') : e.getAttribute('placeholder') || e.getAttribute('title')) })))), buttons: buttons().slice(0, 80).map(e => ({ label: clean(e.getAttribute('aria-label')), text: clean(e.textContent), disabled: Boolean(e.disabled || e.getAttribute('aria-disabled') === 'true') })), options: [JSON.stringify(globalThis.kisaraFlowRecoveryDiagnostic || globalThis.kisaraFlowControlDiagnostic || {}),...performance.getEntriesByType('resource').filter(e=>e.initiatorType==='video'||/googlevideo\.com|flow-content\.google\/video\/|\.mp4(?:[?]|$)/i.test(e.name)).slice(-6).map(e=>JSON.stringify({host:new URL(e.name).hostname,type:e.initiatorType,contentType:e.contentType||'',size:e.encodedBodySize}))].concat([...document.querySelectorAll('[role="menuitem"],[role="option"],[role="radio"],[role="tab"],[role="dialog"]')].filter(visible).slice(0, 40).map(e => clean(e.textContent))) });
++  const snapshot = () => ({ pending: [...document.querySelectorAll('flow-stop-icon-button,flow-pending-tile')].filter(visible).map(e=>({tag:e.tagName,parent:e.parentElement.tagName,text:clean(e.textContent)})), uploads: { inputs: [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple,parent:e.parentElement.tagName})), ancestry: editors().flatMap(e=>{const a=[];for(let p=e,n=0;p&&n<7;p=p.parentElement,n++)a.push({tag:p.tagName,classes:clean(p.className),images:p.querySelectorAll('img').length});return a}) }, composer: { editors: editors().length, draftLength: editors().reduce((n,e) => n + (e.textContent || '').length, 0), submitCount: submitButtons().length, submitDisabled: submitButtons().some(disabled), busy: busy(), online: navigator.onLine }, host: location.hostname, projectOpen: /^\/project\/[^/]+/.test(location.pathname), blocked: blocked(), fields: [...document.querySelectorAll('video')].map(e=>({tag:'video',role:e.parentElement.tagName,label:JSON.stringify({loop:e.loop,duration:Number.isFinite(e.duration)?e.duration:null,width:e.videoWidth,height:e.videoHeight}),placeholder:(e.currentSrc||e.src?new URL(e.currentSrc||e.src).hostname:'no-source')+' '+clean(e.className)})).concat([...document.querySelectorAll('flow-video-tile')].map((e,i)=>({tag:'video-tile',role:String(i),label:clean(e.textContent||e.getAttribute('aria-label')),placeholder:(visible(e)?'visible':'hidden')+' '+[...e.attributes].map(a=>a.name).join(',')})).concat([...document.querySelectorAll('textarea,input:not([type="password"]),[contenteditable="true"],flow-base-prompt-box img,flow-image-tile img,flow-video-tile img')].filter(visible).slice(0, 12).map(e => ({ tag: e.tagName.toLowerCase(), role: e.getAttribute('role') || '', label: clean(e.getAttribute('aria-label') || e.getAttribute('alt')), placeholder: clean(e.tagName==='IMG' ? e.naturalWidth+'x'+e.naturalHeight+' '+(()=>{try{return new URL(e.currentSrc||e.src).hostname||new URL(e.currentSrc||e.src).protocol}catch{return 'unknown'}})() : e.getAttribute('placeholder') || e.getAttribute('title')) })))), buttons: buttons().slice(0, 80).map(e => ({ label: clean(e.getAttribute('aria-label')), text: clean(e.textContent), disabled: Boolean(e.disabled || e.getAttribute('aria-disabled') === 'true') })), options: [JSON.stringify(globalThis.kisaraFlowRecoveryDiagnostic || globalThis.kisaraFlowControlDiagnostic || {}),...performance.getEntriesByType('resource').filter(e=>e.initiatorType==='video'||/googlevideo\.com|flow-content\.google\/video\/|\.mp4(?:[?]|$)/i.test(e.name)).slice(-6).map(e=>JSON.stringify({host:new URL(e.name).hostname,type:e.initiatorType,contentType:e.contentType||'',size:e.encodedBodySize}))].concat([...document.querySelectorAll('[role="menuitem"],[role="option"],[role="radio"],[role="tab"],[role="dialog"]')].filter(visible).slice(0, 40).map(e => clean(e.textContent))) });
 +  if (location.hostname !== 'flow.google.com' || !/^\/project\/[^/]+/.test(location.pathname)) throw new Error('project_required');
 +  if (blocked()) throw new Error('google_blocked');
 +  if(task.action==='download_selected_video'){
@@ -682,14 +682,14 @@ index 0000000..1d0a00a
 +    } else {
 +      const liveComposer = () => { let p=editors()[0]?.parentElement;while(p&&!p.querySelector('[aria-label="Mulai pembuatan"],[aria-label="Start generation"]'))p=p.parentElement;return p&&p!==document.body?p:composer; };
 +      const thumbnails = () => [...liveComposer().querySelectorAll('img')].filter(e => visible(e) && !e.closest('flow-image-tile,flow-video-tile') && e.naturalWidth >= 64);
++      const matchesReference=async(image,ref)=>{
++        const a=await referencePixels(image.currentSrc||image.src),b=await referencePixels(ref);let delta=0;
++        for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);
++        return delta/a.length<=12;
++      };
 +      const matchingAttachments=async()=>{
 +        if(thumbnails().length!==refs.length)return false;
-+        const pixels=referencePixels;
-+        for(let i=0;i<refs.length;i++){
-+          const a=await pixels(thumbnails()[i].currentSrc||thumbnails()[i].src),b=await pixels(refs[i]);let delta=0;
-+          for(let j=0;j<a.length;j++)delta+=Math.abs(a[j]-b[j]);
-+          if(delta/a.length>12)return false;
-+        }
++        for(let i=0;i<refs.length;i++)if(!await matchesReference(thumbnails()[i],refs[i]))return false;
 +        return true;
 +      };
 +      let reuseAttachments = false;
@@ -734,7 +734,12 @@ index 0000000..1d0a00a
 +          if(button.isConnected&&visible(button)&&thumbnails().length===count)await nativeControlClick(button);
 +        };
 +        const selectReferences=async()=>{
-+          for(const name of referenceNames){
++          for(const [index,name] of referenceNames.entries()){
++            // A direct upload may attach only the first image and leave others in the library.
++            if(thumbnails().length>index){
++              if(!await matchesReference(thumbnails()[index],refs[index]))throw new Error('existing_attachments');
++              continue;
++            }
 +            let candidates=candidatesFor(name);
 +            if(!candidates.length){
 +              const toggle=ingredientControls();
@@ -793,7 +798,7 @@ index 0000000..1d0a00a
 +        while (Date.now() < uploadDeadline) {
 +          if (blocked()) throw new Error('google_blocked');
 +          // The agent uploads dropped files into its library first; attach the exact content-named assets.
-+          if (!thumbnails().length && Date.now() - sentAt > 1500) {
++          if (thumbnails().length < refs.length && Date.now() - sentAt > 1500) {
 +            if (!pickerOpened) {
 +              const add = buttons().filter(e=>/^(Tambahkan bahan ke kotak perintah|Add ingredients to prompt)$/.test(e.getAttribute('aria-label')||''));
 +              if (add.length === 1) { if (clean(add[0].textContent) !== 'close') add[0].click(); pickerOpened = true; }
@@ -824,7 +829,8 @@ index 0000000..1d0a00a
 +    const batchUserTurn=()=>task.batchKey?[...document.querySelectorAll('flow-chat-bubble')].find(e=>e.querySelector('.user-bubble')&&e.textContent.includes('[KISARA:'+task.batchKey+']')):null;
 +    const batchResponse=()=>{const turns=[...document.querySelectorAll('flow-chat-bubble')],start=turns.indexOf(batchUserTurn());if(start<0)return [];const roots=[];for(let i=start+1;i<turns.length;i++){if(turns[i].querySelector('.user-bubble'))break;if(turns[i].querySelector('.agent-bubble'))roots.push(turns[i])}return roots};
 +    const outputBusy=()=>task.batchKey?batchResponse().some(e=>e.querySelector('flow-pending-tile,[role="progressbar"],mat-spinner')):busy();
-+    const images = () => task.batchKey ? batchResponse().flatMap(root=>[...root.querySelectorAll('img')]).filter(e=>mediaId(e)&&e.naturalWidth>=144&&e.naturalHeight>=144) : [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')].filter(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144 && !e.closest('flow-video-tile')?.querySelector('flow-pending-tile'));
++    const videoTilesBefore = new Set(document.querySelectorAll('flow-video-tile'));
++    const images = () => video ? [...document.querySelectorAll('flow-video-tile')].filter(tile => !videoTilesBefore.has(tile) && !tile.querySelector('flow-pending-tile')).map(tile => [...tile.querySelectorAll('img')].find(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144)).filter(Boolean) : task.batchKey ? batchResponse().flatMap(root=>[...root.querySelectorAll('img')]).filter(e=>mediaId(e)&&e.naturalWidth>=144&&e.naturalHeight>=144) : [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')].filter(e => mediaId(e) && e.naturalWidth >= 144 && e.naturalHeight >= 144 && !e.closest('flow-video-tile')?.querySelector('flow-pending-tile'));
 +    const baselineImages = () => [...document.querySelectorAll(video ? 'flow-video-tile img' : 'flow-image-tile img')];
 +    const before = new Set(baselineImages().map(mediaId));
 +    const expectedRatio = task.aspect === '9:16' ? 9/16 : 16/9;
@@ -1018,7 +1024,7 @@ index be41418..ed4c34e 100644
    }
  }
 diff --git a/extension/manifest.json b/extension/manifest.json
-index f69c33e..55e0557 100644
+index f69c33e..ce2b9b4 100644
 --- a/extension/manifest.json
 +++ b/extension/manifest.json
 @@ -1,15 +1,21 @@
@@ -1027,7 +1033,7 @@ index f69c33e..55e0557 100644
    "name": "Flow2API Captcha Worker",
 -  "version": "1.0.0",
 -  "description": "Generate Google Labs reCAPTCHA Enterprise tokens for Flow2API.",
-+  "version": "1.6.0",
++  "version": "1.6.2",
 +  "description": "Penghubung worker Chrome untuk generasi Google Flow melalui server lokal.",
    "permissions": [
      "storage",

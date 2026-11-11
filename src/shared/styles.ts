@@ -1,5 +1,13 @@
 export type StyleCategory = '2d' | '3d' | 'realistis'
 
+export interface CustomVisualStyle {
+  id: string
+  name: string
+  prompt: string
+  /** Owned image reference used as an optional Flow style attachment. */
+  reference?: string
+}
+
 export interface VisualStyle {
   id: string
   name: string
@@ -276,6 +284,44 @@ export const VISUAL_STYLES: VisualStyle[] = [
   }
 ]
 
+export function customStyleId(name: string, prompt: string, reference?: string): string {
+  return `custom:${encodeURIComponent(name.trim())}|${encodeURIComponent(prompt.trim())}${reference ? `|${encodeURIComponent(reference)}` : ''}`
+}
+
+export function customStyleReference(id: string): string | undefined {
+  if (!id.startsWith('custom:')) return undefined
+  try {
+    const reference = decodeURIComponent(id.split('|')[2] || '')
+    return /^[a-f0-9-]{36}\.png$/.test(reference) ? reference : undefined
+  } catch { return undefined }
+}
+
+export function makeCustomStyle(name: string, prompt: string, reference?: string): VisualStyle {
+  const cleanName = name.trim() || 'Gaya custom'
+  const cleanPrompt = prompt.trim()
+  return {
+    id: customStyleId(cleanName, cleanPrompt, reference),
+    name: cleanName,
+    category: '2d',
+    niche: 'Gaya buatan sendiri',
+    swatch: '#8B7CF6',
+    ink: '#FFFFFF',
+    prompt: `${cleanPrompt} ${NO_TEXT}`,
+    tag: cleanPrompt.slice(0, 90),
+    characterHint: 'a character rendered consistently in the custom visual style'
+  }
+}
+
 export function getStyle(id: string): VisualStyle {
-  return VISUAL_STYLES.find((s) => s.id === id) ?? VISUAL_STYLES[0]
+  const builtIn = VISUAL_STYLES.find((s) => s.id === id)
+  if (builtIn) return builtIn
+  if (id.startsWith('custom:')) {
+    try {
+      const [rawName, rawPrompt] = id.slice(7).split('|')
+      const name = decodeURIComponent(rawName || 'Gaya custom')
+      const prompt = decodeURIComponent(rawPrompt || '')
+      if (prompt.trim()) return { ...makeCustomStyle(name, prompt, customStyleReference(id)), id }
+    } catch { /* Corrupt imported IDs must not crash the project screen. */ }
+  }
+  return VISUAL_STYLES[0]
 }

@@ -1,16 +1,19 @@
 import { FlowStyleReference } from './FlowStyleReference'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check } from 'lucide-react'
-import { STYLE_CATEGORIES, VISUAL_STYLES, type StyleCategory } from '@shared/styles'
+import { STYLE_CATEGORIES, VISUAL_STYLES, getStyle, makeCustomStyle, type StyleCategory } from '@shared/styles'
 import { StyleSwatch } from './StyleArt'
 import { Segmented, cx } from './ui'
 
 const CATEGORY_LABEL: Record<StyleCategory, string> = { '2d': '2D', '3d': '3D', realistis: 'Realistis' }
 
 export function StylePicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
-  const current = VISUAL_STYLES.find((s) => s.id === value)
+  const [custom, setCustom] = useState<ReturnType<typeof makeCustomStyle>[]>([])
+  useEffect(() => { void window.api.settings.get().then(s => setCustom((s.customVisualStyles ?? []).map(x => makeCustomStyle(x.name, x.prompt, x.reference)))).catch(() => {}) }, [])
+  const styles = useMemo(() => [...VISUAL_STYLES, ...custom], [custom])
+  const current = getStyle(value)
   const [cat, setCat] = useState<StyleCategory | 'all'>('all')
-  const list = VISUAL_STYLES.filter((s) => cat === 'all' || s.category === cat)
+  const list = styles.filter((s) => cat === 'all' || s.category === cat)
   return (
     <div className="flex flex-col gap-3">
       <FlowStyleReference />

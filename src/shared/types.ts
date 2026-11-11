@@ -63,16 +63,22 @@ export interface VisualReviewIssue {
   kind?: 'script' | 'visual'
 }
 
+export type ShotRole = 'situation' | 'detail' | 'comparison' | 'reaction' | 'consequence' | 'chapter'
+export interface PresentationShot { clipId: string; role: ShotRole; focus: string }
+
 export interface PublicationMetadata {
   title: string
   description: string
   hashtags: string[]
-  thumbnail?: { headline: string; concept: string; prompt: string }
+  thumbnail?: { headline: string; concept: string; prompt: string; sourceTitle?: string; source?: string }
   source: string
   origin: 'ai' | 'draft' | 'edited'
 }
 
+export interface ThumbnailResult { source: string; title: string; thumbnail: NonNullable<PublicationMetadata['thumbnail']> }
+
 export interface EditorSettings {
+  presentation?: { version: 1; shots: PresentationShot[] }
   publication?: PublicationMetadata
   contentFormat?: ContentFormat
   durationMode?: 'auto' | 'manual'
@@ -162,6 +168,8 @@ export interface ImageOverlay extends OverlayBase {
 export type TextOverlayStyle = 'plain' | 'outline' | 'box'
 
 export interface TextOverlay extends OverlayBase {
+  /** Generated emphasis follows its spoken quote until the user changes its timing. */
+  presentationCue?: { clipId: string; narration: string; quote: string; language: string; edited?: boolean }
   kind: 'text'
   text: string
   /** Font size as a fraction of the frame height. */
@@ -452,6 +460,8 @@ export interface AppSettings {
   channelCharacterName: string
   channelCharacterDescription: string
   channelCharacterReference: string
+  /** User-created visual presets, stored in settings so they survive restarts. */
+  customVisualStyles: { id: string; name: string; prompt: string; reference?: string }[]
 
   defaultTtsProvider: TtsProvider
   defaultLanguage: string
