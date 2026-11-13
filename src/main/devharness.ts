@@ -906,6 +906,8 @@ export function attachDevHarness(win: BrowserWindow): void {
         }
         if (step.main === 'channelVisualChecks' && demoId) {
           const initial = getBundle(demoId), clip = initial.clips[0]
+          // The identity sheet is checked on a non-stickman style; stickman intentionally omits it below.
+          saveSnapshot({ ...initial, project: { ...initial.project, styleId: 'flat' } })
           const sample = assetAbsPath(demoId, initial.assets.find(a => a.id === clip.imageAssetId)!.localPath)
           const bytes = readFileSync(sample)
           dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [sample] })
@@ -919,7 +921,7 @@ export function attachDevHarness(win: BrowserWindow): void {
           dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
           assert.equal(await win.webContents.executeJavaScript('window.api.settings.importChannelVisual()', true), null)
           assert.equal(getSettings().channelCharacterReference, selected.channelCharacterReference)
-          let singles = 0, batches = 0
+          let singles = 0, batches = 0, expectCharacter = true
           const prompts: string[] = []
           const server = createServer(async (req, res) => {
             res.setHeader('Content-Type', 'application/json')
@@ -934,8 +936,12 @@ export function attachDevHarness(win: BrowserWindow): void {
               for (const task of batch ? body.tasks : [body]) {
                 assert.equal(task.references.length, 1, 'Shared character/style must be attached only once')
                 assert.equal(task.references[0].split(',')[1], reference)
-                assert(!task.prompt.includes('Kenzo'), 'Old identity must not survive a replacement')
-                assert(task.prompt.includes('FIRST attached image'))
+                if (expectCharacter) {
+                  assert(!task.prompt.includes('Kenzo'), 'Old identity must not survive a replacement')
+                  assert(task.prompt.includes('FIRST attached image'))
+                } else {
+                  assert(!task.prompt.includes('FIRST attached image'), 'Stickman must not receive the channel identity sheet')
+                }
                 prompts.push(task.prompt)
               }
               const mediaUrl = 'data:image/png;base64,' + bytes.toString('base64')
@@ -959,8 +965,17 @@ export function attachDevHarness(win: BrowserWindow): void {
             await Promise.all(jobs.map((job: { id: string }) => waitForJob(job.id)))
             for (const job of jobs) assert.equal(getJob(job.id)?.status, 'done', getJob(job.id)?.error || '')
             assert.equal(singles, 2); assert.equal(batches, 1)
+            // Stickman drops the identity sheet, but the result must still pass the post-generation identity check.
+            expectCharacter = false
+            const stickman = getBundle(demoId)
+            saveSnapshot({ ...stickman, project: { ...stickman.project, styleId: 'stickman' } })
+            for (const item of getBundle(demoId).clips) patchClip(item.id, { imageAssetId: null })
+            const stickmanJobs = await win.webContents.executeJavaScript(`window.api.generate.missingImages(${JSON.stringify(demoId)})`, true)
+            await Promise.all(stickmanJobs.map((job: { id: string }) => waitForJob(job.id)))
+            for (const job of stickmanJobs) assert.equal(getJob(job.id)?.status, 'done', getJob(job.id)?.error || '')
+            assert.equal(batches, 2)
             assert.equal(getSettings().channelCharacterReference, selected.channelCharacterReference)
-            console.log('CHANNEL VISUAL NATIVE PASS: atomic upload via IPC, canceled upload preserves selection, changed scene prompts retain one exact reference in single and batch requests, no old Kenzo description, generated fixture assets saved. No external generation.')
+            console.log('CHANNEL VISUAL NATIVE PASS: atomic upload via IPC, canceled upload preserves selection, changed scene prompts retain one exact reference in single and batch requests, stickman omits the identity sheet while still attaching results, no old Kenzo description, generated fixture assets saved. No external generation.')
           } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
           setSettings({ imageProvider: 'higgsfield' })
         }

@@ -15,5 +15,9 @@ const {build}=require('esbuild'),assert=require('node:assert/strict'),path=requi
  let sent=0;const bad=new FlowImageBatch(['a','b'],prepare,async()=>{sent++;return [{id:'a',bytes:Buffer.from('x')},{id:'a',bytes:Buffer.from('y')}]});
  await assert.rejects(bad.image('a',new AbortController().signal),/Pemetaan/);assert(!bad.canDrain('b'));assert.equal(sent,1);
  const cancel=new AbortController();cancel.abort();const aborted=new FlowImageBatch(['a'],prepare,async(_,signal)=>{signal.throwIfAborted();throw Error('Must not submit')});await assert.rejects(aborted.image('a',cancel.signal));assert(!aborted.canDrain('a'));
- console.log('TEN COORDINATOR PASS: 73 images in groups of ten; reverse results matched by ID; partial failure drains nine successes and sends no next group; duplicate IDs rejected; cancellation stops.');
+ const concurrentIds=Array.from({length:10},(_,i)=>'p'+i);let concurrentSends=0;
+ const concurrent=new FlowImageBatch(concurrentIds,prepare,async requests=>{concurrentSends++;await new Promise(r=>setTimeout(r,5));return requests.map(r=>({id:r.id,bytes:Buffer.from(r.id)}))});
+ const concurrentImages=await Promise.all(concurrentIds.map(id=>concurrent.image(id,new AbortController().signal)));
+ assert.equal(concurrentSends,1);assert.deepEqual(concurrentImages.map(b=>b.toString()),concurrentIds);
+ console.log('TEN COORDINATOR PASS: 73 images in groups of ten; reverse results matched by ID; partial failure drains nine successes and sends no next group; concurrent callers share one submission; duplicate IDs rejected; cancellation stops.');
 })().catch(e=>{console.error(e);process.exitCode=1});

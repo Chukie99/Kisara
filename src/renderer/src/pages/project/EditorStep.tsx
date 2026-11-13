@@ -6,7 +6,7 @@ import { soundSpan } from '@shared/sound'
 import { confirmDialog, cx } from '../../components/ui'
 import { clipNumber, errorText } from '../../lib/format'
 import { useApp } from '../../store/app'
-import { useProject } from '../../store/project'
+import { recordHistory, useHistory, useProject } from '../../store/project'
 import {
   removeOverlay,
   useAudition,
@@ -39,7 +39,7 @@ export function EditorStep() {
   const musicRange = project ? musicSpan(project.editor, total) : undefined
   const sfx = useMemo(() => (project?.editor.sfx ?? []).flatMap((fx) => {
     const asset = assets[fx.assetId]
-    return asset ? [{ ...fx, asset, ...soundSpan(fx, asset, total, clips) }] : []
+    return asset ? [{ ...fx, asset, ...soundSpan(fx, asset, total, clips), fadeInSec: fx.fadeInSec ?? 0, fadeOutSec: fx.fadeOutSec ?? 0 }] : []
   }), [project?.editor.sfx, assets, total, clips])
   usePlaybackEngine(
     items,
@@ -49,7 +49,9 @@ export function EditorStep() {
     project?.editor.duckMusic ?? true,
     project?.editor.voiceVolumeDb ?? 0,
     musicRange,
-    sfx
+    sfx,
+    (project?.editor.musicFadeInMs ?? 0) / 1000,
+    (project?.editor.musicFadeOutMs ?? 2000) / 1000
   )
 
   // Keyboard actions use the latest handlers, which are set on every render below.
@@ -61,18 +63,49 @@ export function EditorStep() {
       const tag = el?.tagName
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!el?.isContentEditable
       if (typing || document.querySelector('[role="dialog"]')) return
-      if (e.code === 'Space') {
+      const mod = e.ctrlKey || e.metaKey
+      const seekBy = (delta: number): void => {
+        const s = usePlayback.getState()
+        if (s.playing) s.pause()
+        s.seek(Math.min(total, Math.max(0, s.t + delta)))
+      }
+      if (mod && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault()
+        void (e.shiftKey ? useHistory.getState().redo() : useHistory.getState().undo())
+      } else if (mod && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault()
+        void useHistory.getState().redo()
+      } else if (e.code === 'Space' || e.key === 'k' || e.key === 'K') {
+        e.preventDefault()
+        if (e.repeat) return
         const s = usePlayback.getState()
         if (!s.playing && s.t >= total - 0.05) s.seek(0)
         s.toggle()
+      } else if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault()
+        seekBy(e.shiftKey ? -5 : -1)
+      } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault()
+        seekBy(e.shiftKey ? 5 : 1)
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        seekBy(e.shiftKey ? -1 : -1 / 30)
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        seekBy(e.shiftKey ? 1 : 1 / 30)
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        usePlayback.getState().seek(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        usePlayback.getState().seek(total)
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         void actions.current.remove()
-      } else if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      } else if ((e.key === 's' || e.key === 'S') && !mod && !e.altKey) {
         e.preventDefault()
         void actions.current.split()
-      } else if ((e.key === 'b' || e.key === 'B') && (e.ctrlKey || e.metaKey)) {
+      } else if ((e.key === 'b' || e.key === 'B') && mod) {
         e.preventDefault()
         void actions.current.split()
       }
@@ -114,6 +147,7 @@ export function EditorStep() {
   // The timeline marks whatever the open panel is editing, so only one thing ever looks selected.
   const selection = ((): TimelineSelection => {
     if (tab === 'klip' && selectedClipId) return { kind: 'clip', id: selectedClipId }
+    if (tab === 'tampilan' && selectedClipId) return { kind: 'clip', id: selectedClipId }
     if (tab === 'suara' && selectedClipId) return { kind: 'voice', id: selectedClipId }
     if (tab === 'transisi' && transitionId) return { kind: 'transition', id: transitionId }
     if (tab === 'caption' && captionSel) return { kind: 'caption', key: captionSel.key, from: captionSel.from }
@@ -138,6 +172,7 @@ export function EditorStep() {
       return
     }
     try {
+      recordHistory('Potong klip')
       await flush()
       const bundle = await window.api.clips.split(target.item.clip.id, Math.round((t - target.item.start) * 1000))
       load(bundle)
@@ -167,12 +202,14 @@ export function EditorStep() {
         })
         if (ok) removeClip(selection.id)
       } else if (selection.kind === 'voice') {
+        recordHistory('Lepas suara')
         await flush()
         await window.api.clips.detachVoice(selection.id)
       } else if (selection.kind === 'caption') {
         const chunk = chunks.find((c) => c.source?.key === selection.key && c.source.from === selection.from)
         const asset = assets[selection.key]
         if (chunk?.source && asset) {
+          recordHistory('Hapus caption')
           await window.api.assets.setWords(asset.id, replaceCaptionWords(asset.meta.words ?? [], chunk.source.from, chunk.source.count, ''))
           selectCaption(null)
         }
@@ -194,7 +231,8 @@ export function EditorStep() {
   const onPick = (p: TimelinePick): void => {
     if (p.kind === 'clip' || p.kind === 'voice') {
       select(p.id)
-      setTab(p.kind === 'clip' ? 'klip' : 'suara')
+      if (p.kind === 'voice') setTab('suara')
+      else setTab((current) => (current === 'tampilan' ? 'tampilan' : 'klip'))
     } else if (p.kind === 'caption') {
       if (p.chunk.source) selectCaption({ key: p.chunk.source.key, from: p.chunk.source.from })
       setTab('caption')

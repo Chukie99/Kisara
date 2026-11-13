@@ -33,6 +33,7 @@ dalam transaksi, lalu `user_version` dinaikkan.
 | 5 | `projects.video_resolution` |
 | 6 | `clips.video_camera`, `video_strength`, `transition_ms`, `voice_gain_db` |
 | 7 | `clips.media_in_ms`, `voice_in_ms`, `voice_out_ms`, `voice_start_ms` |
+| 8 | `clips.look_brightness`, `look_contrast`, `look_saturation`, `look_hue`, `voice_fade_in_ms`, `voice_fade_out_ms` |
 
 **Aturan:** tambahkan migrasi baru di akhir. Jangan mengubah migrasi yang sudah ada, karena pengguna lama sudah
 menjalankannya.
@@ -68,6 +69,8 @@ Satu klip = satu adegan: gambar atau video, suara narasinya, dan geraknya.
 | `videoCamera`, `videoStrength` | gerak kamera tambahan di atas video AI (`static` = tanpa gerak) |
 | `transition`, `transitionMs` | transisi ke klip berikutnya (`fade`/`slideleft`/`zoomin`/`cut`) dan durasinya (null = 0,4 dtk) |
 | `voiceGainDb` | volume suara klip ini (dB) |
+| `voiceFadeInMs`, `voiceFadeOutMs` | fade masuk/keluar suara narasi klip ini (ms) |
+| `lookBrightness`, `lookContrast`, `lookSaturation`, `lookHue` | tampilan warna klip: persen untuk kecerahan/kontras/saturasi, derajat untuk rona (`src/shared/look.ts`) |
 | `mediaInMs` | titik mulai video di dalam filenya (tepi kiri klip video yang ditarik) |
 | `voiceInMs`, `voiceOutMs`, `voiceStartMs` | potongan suara: bagian file yang dipakai (`out` null = sampai akhir) dan posisinya dari awal klip |
 | `imageAssetId`, `videoAssetId`, `audioAssetId` | aset aktif (dimiliki proses utama, tidak ikut snapshot) |
@@ -86,6 +89,7 @@ Tambahkan di semua tempat berikut, atau data akan hilang diam-diam:
 6. `CLIP_COLS` di `repo.ts` kalau proses utama perlu mengubahnya lewat `patchClip`
 7. Nilai bawaan di `addClip` (`renderer/src/store/project.ts`)
 8. `StoryClip` di `repo.ts` (daftar `Omit`) kalau kolom tidak berasal dari naskah AI
+9. `restoreSnapshot()` di `repo.ts` kalau kolom dimiliki proses utama (aset, `visual_source`) dan harus ikut undo
 
 ## Aset (`Asset`)
 
@@ -121,8 +125,10 @@ Narasi dianggap **basi** (perlu direkam ulang) kalau `asset.prompt` berbeda dari
 | `captionFont`, `captionColor`, `captionHighlight`, `captionBg` | penyesuaian di atas gaya (font, warna, sorotan, latar) |
 | `musicAssetId`, `musicVolumeDb`, `duckMusic` | musik latar, volume, dan turun otomatis saat narasi |
 | `musicStartMs`, `musicEndMs`, `musicInMs` | posisi musik di timeline dan titik mulainya di dalam lagu |
+| `musicFadeInMs`, `musicFadeOutMs` | fade musik (ms); bawaan tanpa fade masuk, fade keluar 2 detik |
 | `voiceVolumeDb` | volume semua narasi |
 | `overlays` | logo/gambar dan teks di atas video (`Overlay[]`) |
+| `sfx` | efek suara di timeline (`SfxOverlay[]`, punya `fadeInSec`/`fadeOutSec` sendiri) |
 | `musicPrompt` | prompt musik AI terakhir (untuk Suno dll.) |
 
 Properti opsional baru di `EditorSettings` tidak butuh migrasi; berikan nilai bawaan saat dibaca (`?? 0`).

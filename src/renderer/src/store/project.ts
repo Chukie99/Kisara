@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Asset, Character, Clip, Job, Project, ProjectBundle, ProjectSnapshot } from '@shared/types'
+import type { Asset, Character, Clip, Job, Project, ProjectBundle, ProjectSnapshot, WordTiming } from '@shared/types'
 import { errorText } from '../lib/format'
 
 export type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
@@ -54,6 +54,157 @@ function snapshot(s: ProjectState): ProjectSnapshot {
 
 const newId = (): string => crypto.randomUUID()
 
+/** One step in the editor's history: the whole editor as it was before the change. */
+export interface HistoryEntry {
+  label: string
+  project: Project
+  characters: Character[]
+  clips: Clip[]
+  /** Caption words live on the voice assets, not on the clips, so undo has to carry them too. */
+  words: Record<string, WordTiming[]>
+  selectedClipId: string | null
+}
+
+const HISTORY_LIMIT = 60
+const COALESCE_MS = 700
+let undoStack: HistoryEntry[] = []
+let redoStack: HistoryEntry[] = []
+let lastRecord: { key: string; at: number } | null = null
+let restoring = false
+
+function captureEntry(label: string): HistoryEntry | null {
+  const s = useProject.getState()
+  if (!s.project) return null
+  const words: Record<string, WordTiming[]> = {}
+  for (const a of Object.values(s.assets)) {
+    if (a.kind === 'audio' && a.meta.words) words[a.id] = [...a.meta.words]
+  }
+  return {
+    label,
+    project: s.project,
+    characters: s.characters,
+    clips: s.clips,
+    words,
+    selectedClipId: s.selectedClipId
+  }
+}
+
+interface HistoryState {
+  canUndo: boolean
+  canRedo: boolean
+  undoLabel: string | null
+  redoLabel: string | null
+  undo(): Promise<void>
+  redo(): Promise<void>
+  clear(): void
+}
+
+export const useHistory = create<HistoryState>(() => ({
+  canUndo: false,
+  canRedo: false,
+  undoLabel: null,
+  redoLabel: null,
+  undo: async () => {
+    if (restoring) return
+    const entry = undoStack.pop()
+    if (!entry) return
+    const current = captureEntry(entry.label)
+    if (current) redoStack.push(current)
+    lastRecord = null
+    publishHistory()
+    await applyEntry(entry)
+  },
+  redo: async () => {
+    if (restoring) return
+    const entry = redoStack.pop()
+    if (!entry) return
+    const current = captureEntry(entry.label)
+    if (current) undoStack.push(current)
+    lastRecord = null
+    publishHistory()
+    await applyEntry(entry)
+  },
+  clear: () => clearHistory()
+}))
+
+function publishHistory(): void {
+  useHistory.setState({
+    canUndo: undoStack.length > 0,
+    canRedo: redoStack.length > 0,
+    undoLabel: undoStack.at(-1)?.label ?? null,
+    redoLabel: redoStack.at(-1)?.label ?? null
+  })
+}
+
+export function clearHistory(): void {
+  undoStack = []
+  redoStack = []
+  lastRecord = null
+  publishHistory()
+}
+
+/**
+ * Remembers the editor before a change. Repeated changes with the same `key` (a slider or a drag) are
+ * one step, so dragging a trim handle is undone in one go rather than one pixel at a time.
+ */
+export function recordHistory(label: string, key?: string): void {
+  if (restoring) return
+  const now = Date.now()
+  if (key && lastRecord && lastRecord.key === key && now - lastRecord.at < COALESCE_MS) {
+    lastRecord.at = now
+    return
+  }
+  const entry = captureEntry(label)
+  if (!entry) return
+  undoStack.push(entry)
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
+  redoStack = []
+  lastRecord = { key: key ?? `${label}:${Math.random()}`, at: now }
+  publishHistory()
+}
+
+/** Puts the editor back and writes it to SQLite, including the links and words a normal save skips. */
+async function applyEntry(entry: HistoryEntry): Promise<void> {
+  const state = useProject.getState()
+  if (!state.project) return
+  restoring = true
+  loadVersion++
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+  try {
+    // An older autosave must not land after the restored state.
+    if (inFlight) await inFlight.catch(() => {})
+    const assets = { ...state.assets }
+    for (const [id, words] of Object.entries(entry.words)) {
+      const asset = assets[id]
+      if (asset) assets[id] = { ...asset, meta: { ...asset.meta, words } }
+    }
+    useProject.setState({
+      project: entry.project,
+      characters: entry.characters,
+      clips: entry.clips,
+      assets,
+      selectedClipId: entry.selectedClipId,
+      saveState: 'saving',
+      saveError: null
+    })
+    const { createdAt: _c, updatedAt: _u, coverAssetId: _cv, ...project } = entry.project
+    const { updatedAt } = await window.api.projects.restore({
+      project,
+      characters: entry.characters,
+      clips: entry.clips,
+      words: entry.words
+    })
+    useProject.setState({ saveState: 'saved', savedAt: updatedAt, saveError: null })
+  } catch (e) {
+    useProject.setState({ saveState: 'error', saveError: errorText(e) })
+  } finally {
+    restoring = false
+  }
+}
+
 export const useProject = create<ProjectState>((set, get) => {
   const touch = (): void => {
     if (get().saveState === 'saving') changedDuringSave = true
@@ -79,6 +230,9 @@ export const useProject = create<ProjectState>((set, get) => {
       loadVersion++
       if (timer) { clearTimeout(timer); timer = null }
       changedDuringSave = false
+      // A split or an AI job reloads the same project: its history stays. Another project starts clean.
+      const previous = get().project?.id
+      if (previous && previous !== b.project.id) clearHistory()
       set({
         loaded: true,
         project: b.project,
@@ -95,28 +249,34 @@ export const useProject = create<ProjectState>((set, get) => {
     unload: () => {
       loadVersion++
       if (timer) clearTimeout(timer)
+      clearHistory()
       set({ loaded: false, project: null, characters: [], clips: [], assets: {}, jobs: {}, selectedClipId: null, saveState: 'saved' })
     },
     select: (clipId) => set({ selectedClipId: clipId }),
 
     updateProject: (patch) => {
+      recordHistory('Ubah proyek', `project:${Object.keys(patch).sort().join(',')}`)
       set({ project: { ...get().project!, ...patch } })
       touch()
     },
     updateEditor: (patch) => {
+      recordHistory('Ubah pengaturan', `editor:${Object.keys(patch).sort().join(',')}`)
       const p = get().project!
       set({ project: { ...p, editor: { ...p.editor, ...patch } } })
       touch()
     },
     updateClip: (id, patch) => {
+      recordHistory('Ubah klip', `clip:${id}:${Object.keys(patch).sort().join(',')}`)
       set({ clips: get().clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
       touch()
     },
     updateCharacter: (id, patch) => {
+      recordHistory('Ubah pemeran', `character:${id}:${Object.keys(patch).sort().join(',')}`)
       set({ characters: get().characters.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
       touch()
     },
     addClip: (afterId) => {
+      recordHistory('Tambah klip')
       const p = get().project!
       const clips = [...get().clips]
       const at = afterId ? clips.findIndex((c) => c.id === afterId) + 1 : clips.length
@@ -140,6 +300,12 @@ export const useProject = create<ProjectState>((set, get) => {
         videoStrength: 'halus',
         transitionMs: null,
         voiceGainDb: 0,
+        voiceFadeInMs: 0,
+        voiceFadeOutMs: 0,
+        lookBrightness: 0,
+        lookContrast: 0,
+        lookSaturation: 0,
+        lookHue: 0,
         mediaInMs: 0,
         voiceInMs: 0,
         voiceOutMs: null,
@@ -154,6 +320,7 @@ export const useProject = create<ProjectState>((set, get) => {
       return clip.id
     },
     removeClip: (id) => {
+      recordHistory('Hapus klip')
       const clips = get().clips
       const i = clips.findIndex((c) => c.id === id)
       const rest = resort(clips.filter((c) => c.id !== id))
@@ -161,6 +328,7 @@ export const useProject = create<ProjectState>((set, get) => {
       touch()
     },
     moveClip: (id, dir) => {
+      recordHistory('Geser urutan klip')
       const clips = [...get().clips]
       const i = clips.findIndex((c) => c.id === id)
       const j = i + dir
@@ -170,6 +338,7 @@ export const useProject = create<ProjectState>((set, get) => {
       touch()
     },
     addCharacter: (init) => {
+      recordHistory('Tambah pemeran')
       const p = get().project!
       const c: Character = {
         id: newId(),
@@ -184,6 +353,7 @@ export const useProject = create<ProjectState>((set, get) => {
       return c.id
     },
     removeCharacter: (id) => {
+      recordHistory('Hapus pemeran')
       set({
         characters: get().characters.filter((c) => c.id !== id),
         clips: get().clips.map((c) => ({ ...c, characterIds: c.characterIds.filter((x) => x !== id) }))

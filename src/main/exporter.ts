@@ -18,6 +18,8 @@ import {
   type ResolvedCaption
 } from '@shared/captions'
 import { cameraPerspective, TRANSITIONS, transitionSecOf } from '@shared/motion'
+import { fadeFilters } from '@shared/audio'
+import { lookFfmpeg, lookOf } from '@shared/look'
 import { clipCaptionWords, musicSpan, voiceSpan } from '@shared/timeline'
 import { soundSpan } from '@shared/sound'
 import { validateImageFile } from './imageQuality'
@@ -315,14 +317,15 @@ function workSize(srcW: number | null | undefined, srcH: number | null | undefin
   return { w: Math.round((size.w * f) / 2) * 2, h: Math.round((size.h * f) / 2) * 2 }
 }
 
-/** Scale and crop to the work size, the camera move, then down to the output size. */
-function cameraChain(cam: string | null, work: { w: number; h: number }, size: { w: number; h: number }, between: string[] = []): string {
+/** Scale and crop to the work size, the camera move, the clip's look, then down to the output size. */
+function cameraChain(cam: string | null, work: { w: number; h: number }, size: { w: number; h: number }, between: string[] = [], look: string | null = null): string {
   return [
     `scale=${work.w}:${work.h}:force_original_aspect_ratio=increase:flags=lanczos`,
     `crop=${work.w}:${work.h}`,
     'setsar=1',
     ...between,
     ...(cam ? [cam] : []),
+    ...(look ? [look] : []),
     ...(work.w !== size.w || work.h !== size.h ? [`scale=${size.w}:${size.h}:flags=lanczos`, 'setsar=1'] : []),
     'format=yuv420p'
   ].join(',')
@@ -349,11 +352,12 @@ async function renderSegment(
   const len = seg.own + seg.overlap + seg.pad
   const frames = Math.max(1, Math.round(len * opts.fps))
   const video = clip.motionType === 'video' ? assetOf(bundle, clip.videoAssetId) : undefined
+  const look = lookFfmpeg(lookOf(clip))
   const enc = ['-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', '-r', String(opts.fps)]
   if (video) {
     const cam = cameraPerspective(clip.videoCamera, clip.videoStrength, Math.max(2, Math.round(seg.own * opts.fps)), opts.fps)
     const work = cam ? workSize(video.width, video.height, size) : size
-    const vf = cameraChain(cam, work, size, [`fps=${opts.fps}`, `tpad=stop_mode=clone:stop_duration=${len.toFixed(3)}`])
+    const vf = cameraChain(cam, work, size, [`fps=${opts.fps}`, `tpad=stop_mode=clone:stop_duration=${len.toFixed(3)}`], look)
     // A video trimmed on the timeline starts that far into its file.
     const from = clip.mediaInMs > 0 ? ['-ss', (clip.mediaInMs / 1000).toFixed(3)] : []
     await runFfmpeg([...from, '-i', assetAbsPath(bundle.project.id, video.localPath), '-vf', vf, '-t', len.toFixed(3), ...enc, out], tmp, signal)
@@ -363,7 +367,7 @@ async function renderSegment(
   if (!image) throw new Error(`Klip ${String(index + 1).padStart(2, '0')} (“${clip.title}”) belum punya gambar.`)
   const ownFrames = Math.max(2, Math.round(seg.own * opts.fps))
   const cam = cameraPerspective(clip.cameraPreset, clip.motionStrength, ownFrames, opts.fps)
-  const vf = cameraChain(cam, cam ? workSize(image.width, image.height, size) : size, size)
+  const vf = cameraChain(cam, cam ? workSize(image.width, image.height, size) : size, size, [], look)
   await runFfmpeg(
     [
       '-loop',
@@ -488,12 +492,20 @@ async function renderProject(ctx: TaskCtx, projectId: string, opts: ExportOption
       if (span.playMs <= 0) return
       args.push('-i', assetAbsPath(projectId, audio.localPath))
       const ms = Math.round(s.start * 1000 + span.startMs)
-      const cut = span.playMs < span.lengthMs ? `,afade=t=out:st=${Math.max(0, span.playMs / 1000 - 0.06).toFixed(3)}:d=0.06` : ''
+      const playSec = span.playMs / 1000
+      const fades = fadeFilters(
+        playSec,
+        Math.min(playSec, Math.max(0, (s.clip.voiceFadeInMs ?? 0) / 1000)),
+        Math.min(playSec, Math.max(0, (s.clip.voiceFadeOutMs ?? 0) / 1000))
+      )
+      const cutFade = span.playMs < span.lengthMs ? `afade=t=out:st=${Math.max(0, playSec - 0.06).toFixed(3)}:d=0.06` : ''
+      const audioFx = [fades, cutFade].filter(Boolean).join(',')
       // Narration volume: for all clips plus this clip's own adjustment.
       const db = (bundle.project.editor.voiceVolumeDb ?? 0) + (s.clip.voiceGainDb ?? 0)
-      const gain = Math.abs(db) > 0.01 ? `volume=${db.toFixed(2)}dB,` : ''
+      const gain = Math.abs(db) > 0.01 ? `volume=${db.toFixed(2)}dB` : ''
+      const chain = [audioFx, gain].filter(Boolean).join(',')
       graph.push(
-        `[${inputIndex}:a]atrim=start=${(span.inMs / 1000).toFixed(3)}:end=${((span.inMs + span.playMs) / 1000).toFixed(3)},asetpts=PTS-STARTPTS${cut},aresample=48000,aformat=channel_layouts=stereo,${gain}adelay=${ms}|${ms}[a${i}]`
+        `[${inputIndex}:a]atrim=start=${(span.inMs / 1000).toFixed(3)}:end=${((span.inMs + span.playMs) / 1000).toFixed(3)},asetpts=PTS-STARTPTS${chain ? `,${chain}` : ''},aresample=48000,aformat=channel_layouts=stereo,adelay=${ms}|${ms}[a${i}]`
       )
       voices.push(`[a${i}]`)
       inputIndex++
@@ -509,9 +521,12 @@ async function renderProject(ctx: TaskCtx, projectId: string, opts: ExportOption
       const span = musicSpan(bundle.project.editor, total)
       const len = span.endSec - span.startSec
       const delay = Math.round(span.startSec * 1000)
+      const fadeInSec = Math.min(len, Math.max(0, (bundle.project.editor.musicFadeInMs ?? 0) / 1000))
+      const fadeOutSec = Math.min(len, Math.max(0, (bundle.project.editor.musicFadeOutMs ?? 2000) / 1000))
+      const fades = fadeFilters(len, fadeInSec, fadeOutSec)
       args.push('-stream_loop', '-1', '-i', assetAbsPath(projectId, music.localPath))
       graph.push(
-        `[${inputIndex}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${span.inSec.toFixed(3)},asetpts=PTS-STARTPTS,atrim=0:${len.toFixed(3)},volume=${bundle.project.editor.musicVolumeDb}dB,afade=t=out:st=${Math.max(0, len - 2).toFixed(3)}:d=${Math.min(2, len).toFixed(3)}${delay ? `,adelay=${delay}|${delay}` : ''}[mus]`
+        `[${inputIndex}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=start=${span.inSec.toFixed(3)},asetpts=PTS-STARTPTS,atrim=0:${len.toFixed(3)},volume=${bundle.project.editor.musicVolumeDb}dB${fades ? `,${fades}` : ''}${delay ? `,adelay=${delay}|${delay}` : ''}[mus]`
       )
       inputIndex++
       if (aout) {
@@ -534,9 +549,12 @@ async function renderProject(ctx: TaskCtx, projectId: string, opts: ExportOption
       const span = soundSpan(fx, asset, total, bundle.clips)
       if (span.end <= span.start) continue
       args.push('-i', assetAbsPath(projectId, asset.localPath))
-      const gain = Math.abs(fx.volumeDb) > 0.01 ? `volume=${fx.volumeDb.toFixed(2)}dB,` : ''
+      const length = span.end - span.start
+      const gain = Math.abs(fx.volumeDb) > 0.01 ? `volume=${fx.volumeDb.toFixed(2)}dB` : ''
+      const fades = fadeFilters(length, Math.min(length, Math.max(0, fx.fadeInSec ?? 0)), Math.min(length, Math.max(0, fx.fadeOutSec ?? 0)))
+      const chain = [gain, fades].filter(Boolean).join(',')
       const delay = Math.round(span.start * 1000)
-      graph.push(`[${inputIndex}:a]atrim=0:${(span.end - span.start).toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,${gain}adelay=${delay}|${delay}[x${k}]`)
+      graph.push(`[${inputIndex}:a]atrim=0:${length.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${chain ? `,${chain}` : ''},adelay=${delay}|${delay}[x${k}]`)
       sfxStreams.push(`[x${k}]`)
       inputIndex++
     }

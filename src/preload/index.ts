@@ -20,6 +20,7 @@ const api: StudioApi = {
     create: call('projects:create'),
     get: call('projects:get'),
     save: call('projects:save'),
+    restore: call('projects:restore'),
     remove: call('projects:remove'),
     duplicate: call('projects:duplicate')
   },

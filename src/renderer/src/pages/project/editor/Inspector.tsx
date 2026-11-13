@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AudioLines, Check, Clapperboard, Copy, ExternalLink, Film, Layers, Mic, Move, Music, Play, Sparkles, Type, Upload, Volume2, X } from 'lucide-react'
+import { ArrowRight, AudioLines, Check, Clapperboard, Copy, ExternalLink, Film, Layers, Mic, Move, Music, Play, Sparkles, Type, Upload, Volume2, X } from 'lucide-react'
 import {
   CAPTION_FONTS,
   CAPTION_POSITIONS,
@@ -11,6 +11,7 @@ import {
   resolveCaption
 } from '@shared/captions'
 import { CAMERA_PRESETS, MOTION_STRENGTHS } from '@shared/motion'
+import { LOOK_HUE_MAX, LOOK_HUE_MIN, LOOK_MAX, LOOK_MIN, LOOK_PRESETS, lookIsDefault, lookMatches, lookOf } from '@shared/look'
 import { geminiVoiceName } from '@shared/models'
 import { voiceSpan } from '@shared/timeline'
 import type { Asset, Clip, WordTiming } from '@shared/types'
@@ -20,22 +21,24 @@ import { Button, Segmented, Switch, cx, inputCls } from '../../../components/ui'
 import { clipNumber, errorText, secLabel, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
 import { useNarration } from '../../../lib/useNarration'
-import { isRunning, jobFor, useProject } from '../../../store/project'
+import { isRunning, jobFor, recordHistory, useProject } from '../../../store/project'
 import { UNKNOWN_AUDIO_MS, useAudition, useCaptionUi, useTimeline } from './engine'
 import { OverlayPanel } from './OverlayPanel'
 import { TransitionPanel } from './TransitionPanel'
 import { SoundPanel } from './SoundPanel'
 
-/** 'transisi' has no button on the rail; it opens from the round buttons between clips on the timeline. */
-export type InspectorTab = 'klip' | 'suara' | 'caption' | 'overlay' | 'musik' | 'efek' | 'transisi'
+/** 'transisi' also opens from the round buttons between clips, which choose which transition to edit. */
+export type InspectorTab = 'klip' | 'tampilan' | 'suara' | 'caption' | 'overlay' | 'musik' | 'efek' | 'transisi'
 
 export const INSPECTOR_TABS: { id: InspectorTab; label: string; icon: typeof Move }[] = [
   { id: 'klip', label: 'Klip', icon: Move },
+  { id: 'tampilan', label: 'Tampilan', icon: Sparkles },
   { id: 'suara', label: 'Suara', icon: Mic },
   { id: 'caption', label: 'Caption', icon: Type },
   { id: 'overlay', label: 'Overlay', icon: Layers },
   { id: 'musik', label: 'Musik', icon: Music },
-  { id: 'efek', label: 'Efek', icon: Volume2 }
+  { id: 'efek', label: 'Efek', icon: Volume2 },
+  { id: 'transisi', label: 'Transisi', icon: ArrowRight }
 ]
 
 function Section({ title, children, className }: { title: string; children: React.ReactNode; className?: string }) {
@@ -195,6 +198,99 @@ function ClipTab({ clip, index }: { clip: Clip; index: number }) {
   )
 }
 
+function LookSlider({ label, value, min, max, unit, onChange }: { label: string; value: number; min: number; max: number; unit: string; onChange: (v: number) => void }) {
+  return (
+    <label className="flex items-center gap-3 text-[13px]">
+      <span className="w-20 shrink-0 text-ink-2">{label}</span>
+      <input type="range" min={min} max={max} step={1} value={value} onChange={(e) => onChange(Number(e.target.value))} aria-label={label} className="min-w-0 flex-1" />
+      <span className="w-14 shrink-0 text-right font-mono">
+        {value > 0 ? '+' : ''}
+        {value}
+        {unit}
+      </span>
+    </label>
+  )
+}
+
+/** Colour and light of one clip, with presets; the preview and the export use the same values. */
+function LookTab({ clip, index }: { clip: Clip; index: number }) {
+  const updateClip = useProject((s) => s.updateClip)
+  const look = lookOf(clip)
+  const audition = (): void => useAudition.getState().start({ kind: 'clip', clipId: clip.id })
+  const set = (patch: Partial<Clip>): void => {
+    updateClip(clip.id, patch)
+    audition()
+  }
+  return (
+    <>
+      <ClipHeader clip={clip} index={index} />
+      <Section title="Preset tampilan">
+        <div className="grid grid-cols-2 gap-2">
+          {LOOK_PRESETS.map((preset) => {
+            const on = lookMatches(look, preset.look)
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                aria-pressed={on}
+                onClick={() =>
+                  set({
+                    lookBrightness: preset.look.brightness,
+                    lookContrast: preset.look.contrast,
+                    lookSaturation: preset.look.saturation,
+                    lookHue: preset.look.hue
+                  })
+                }
+                className={cx(
+                  'h-9 rounded-[10px] border text-[13px] font-medium',
+                  on ? 'border-accent bg-accent-soft text-accent-dark' : 'border-line-2 hover:border-ink-2'
+                )}
+              >
+                {preset.label}
+              </button>
+            )
+          })}
+        </div>
+      </Section>
+      <Section title="Atur sendiri">
+        <LookSlider label="Kecerahan" value={look.brightness} min={LOOK_MIN} max={LOOK_MAX} unit="%" onChange={(v) => set({ lookBrightness: v })} />
+        <LookSlider label="Kontras" value={look.contrast} min={LOOK_MIN} max={LOOK_MAX} unit="%" onChange={(v) => set({ lookContrast: v })} />
+        <LookSlider label="Saturasi" value={look.saturation} min={LOOK_MIN} max={LOOK_MAX} unit="%" onChange={(v) => set({ lookSaturation: v })} />
+        <LookSlider label="Rona" value={look.hue} min={LOOK_HUE_MIN} max={LOOK_HUE_MAX} unit="°" onChange={(v) => set({ lookHue: v })} />
+      </Section>
+      <Section title="Pratinjau" className="border-b-0">
+        <Button size="sm" icon={<Play className="size-4" />} disabled={!clip.imageAssetId && !clip.videoAssetId} onClick={audition}>
+          Putar pratinjau tampilan
+        </Button>
+        <p className="text-xs leading-relaxed text-muted">
+          Warna yang kamu pilih tampil di pratinjau dan dipakai saat ekspor, jadi hasil MP4 tidak berbeda dari yang kamu lihat.
+        </p>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="self-start"
+          disabled={lookIsDefault(look)}
+          onClick={() => set({ lookBrightness: 0, lookContrast: 0, lookSaturation: 0, lookHue: 0 })}
+        >
+          Kembalikan normal
+        </Button>
+      </Section>
+    </>
+  )
+}
+
+/** A fade length in milliseconds, shown in seconds. */
+function MsSlider({ label, value, max, onChange }: { label: string; value: number; max: number; onChange: (v: number) => void }) {
+  const top = Math.max(100, Math.round(max / 50) * 50)
+  return (
+    <label className="flex items-center gap-3 text-[13px]">
+      <span className="w-20 shrink-0 text-ink-2">{label}</span>
+      <input type="range" min={0} max={top} step={50} value={Math.min(value, top)} onChange={(e) => onChange(Number(e.target.value))} aria-label={label} className="min-w-0 flex-1" />
+      <span className="w-16 shrink-0 text-right font-mono">{(Math.min(value, top) / 1000).toFixed(2).replace('.', ',')} dtk</span>
+    </label>
+  )
+}
+
 function DbSlider({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-3 text-[13px]">
@@ -291,6 +387,13 @@ function VoiceTab({ clip, index }: { clip: Clip; index: number }) {
           <p className="text-xs leading-relaxed text-muted">Naikkan kalau suara klip ini terdengar lebih pelan dari klip lainnya.</p>
         </Section>
       )}
+      {voice && (
+        <Section title="Fade suara">
+          <MsSlider label="Fade masuk" value={clip.voiceFadeInMs ?? 0} max={Math.min(5000, clip.durationMs)} onChange={(v) => updateClip(clip.id, { voiceFadeInMs: v })} />
+          <MsSlider label="Fade keluar" value={clip.voiceFadeOutMs ?? 0} max={Math.min(5000, clip.durationMs)} onChange={(v) => updateClip(clip.id, { voiceFadeOutMs: v })} />
+          <p className="text-xs leading-relaxed text-muted">Suara naik dan turun perlahan di awal dan akhir potongannya. Pratinjau memakai fade yang sama dengan hasil ekspor.</p>
+        </Section>
+      )}
       {voice && <VoiceTrim clip={clip} voice={voice} />}
       <Section title="Volume semua narasi" className="border-b-0">
         <DbSlider label="Volume semua narasi" value={project.editor.voiceVolumeDb ?? 0} min={-20} max={6} onChange={(v) => updateEditor({ voiceVolumeDb: v })} />
@@ -329,6 +432,7 @@ function CaptionTextEditor() {
     if (!tokens.length) return
     chain.current = chain.current.then(async () => {
       const words = latest.current.get(r.key) ?? useProject.getState().assets[r.key]?.meta.words ?? []
+      recordHistory('Ubah teks caption', `caption-text:${r.key}:${r.from}`)
       setStatus('saving')
       try {
         const fresh = await window.api.assets.setWords(r.key, replaceCaptionWords(words, r.from, r.count, tokens.join(' ')))
@@ -812,7 +916,7 @@ function MusicTab() {
         )}
       </Section>
       {music && (
-        <Section title="Volume" className="border-b-0">
+        <Section title="Volume">
           <label className="flex items-center gap-3 text-[13px]">
             <input
               type="range"
@@ -833,6 +937,13 @@ function MusicTab() {
             </div>
             <Switch on={e.duckMusic} onChange={(v) => updateEditor({ duckMusic: v })} label="Kecilkan musik saat narasi" />
           </div>
+        </Section>
+      )}
+      {music && (
+        <Section title="Fade musik" className="border-b-0">
+          <MsSlider label="Fade masuk" value={e.musicFadeInMs ?? 0} max={5000} onChange={(v) => updateEditor({ musicFadeInMs: v })} />
+          <MsSlider label="Fade keluar" value={e.musicFadeOutMs ?? 2000} max={5000} onChange={(v) => updateEditor({ musicFadeOutMs: v })} />
+          <p className="text-xs leading-relaxed text-muted">Musik masuk dan keluar perlahan di potongannya. Fade keluar bawaan 2 detik.</p>
         </Section>
       )}
     </>
@@ -862,6 +973,7 @@ export function Inspector({
   return (
     <aside className="scroll-thin flex min-h-0 flex-col overflow-y-auto border-l border-line bg-surface">
       {tab === 'klip' && (clip ? <ClipTab clip={clip} index={index} /> : <p className="p-5 text-sm text-muted">Pilih klip di timeline.</p>)}
+      {tab === 'tampilan' && (clip ? <LookTab clip={clip} index={index} /> : <p className="p-5 text-sm text-muted">Pilih klip di timeline untuk mengatur tampilannya.</p>)}
       {tab === 'suara' && (clip ? <VoiceTab clip={clip} index={index} /> : <p className="p-5 text-sm text-muted">Pilih suara klip di timeline.</p>)}
       {tab === 'caption' && <CaptionTab />}
       {tab === 'overlay' && <OverlayPanel total={total} />}

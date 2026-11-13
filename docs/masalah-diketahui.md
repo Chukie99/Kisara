@@ -5,7 +5,7 @@
 | Masalah | Keterangan | Petunjuk |
 |---|---|---|
 | Gerak kamera di atas **video** bergetar di **pratinjau** | Hasil ekspor sudah halus; yang bergetar hanya pratinjau editor. Overlay hardware sudah dimatikan dan opasitasnya 0,999, tapi pemilik aplikasi masih melihat getaran (kartu grafis NVIDIA). | Kemungkinan lain: konten video 24 fps vs transform 60 fps, atau compositor. Ide: gambar frame video ke `<canvas>` dan terapkan transform di canvas, atau putar pratinjau dari frame yang sudah diskalakan. |
-| Belum ada undo/redo | Hapus overlay, caption, atau suara langsung terjadi (hapus klip ada konfirmasi). | Undo bisa dibuat di store renderer (riwayat snapshot) + IPC untuk aksi di main (split, setWords). |
+| Undo tidak membatalkan hasil AI | Riwayat edit mencakup perubahan timeline (klip, suara, caption, musik, overlay, tampilan, fade), tetapi aset yang sudah dibuat AI tetap ada dan tidak dihapus saat undo. | Disengaja: file aset dipakai bersama beberapa klip dan mahal untuk dibuat ulang. Undo mengembalikan pilihan/tautan, bukan menghapus file. |
 | Whisper hanya untuk Windows | Biner yang disertakan hanya `whisper-cli.exe`. Di macOS, narasi baru otomatis kembali ke waktu perkiraan (`whisperTimes` menangkap error-nya), tapi tombol sinkron caption akan error. | Tambahkan biner whisper.cpp macOS, pilih sesuai `process.platform` di `cliPath()` (`whisper.ts`), dan sembunyikan fitur ini kalau binernya tidak ada. |
 | Installer hanya Windows | `npm run dist` menghasilkan NSIS Windows. | Tambahkan target `mac` di `electron-builder.yml` (perlu sertifikat untuk distribusi). |
 | Rekam ulang narasi mereset durasi | Durasi klip dan potongan suara manual kembali mengikuti suara baru. | Disengaja; bisa ditambah opsi "pertahankan durasi". |
@@ -15,7 +15,7 @@
 
 ## Ide pengembangan
 
-- Undo/redo dan riwayat versi per klip di editor.
+- Riwayat versi per klip di editor (di luar undo/redo sesi).
 - Ekspor langsung ke YouTube (OAuth) dengan judul dan deskripsi dari naskah.
 - Template intro/outro dan watermark tersimpan per channel.
 - Pilihan TTS lokal (tanpa API) untuk pengguna tanpa kunci.

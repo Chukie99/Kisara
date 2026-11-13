@@ -47,8 +47,8 @@ function friendly(status: number, raw: string): Error {
   // (cloudflare/developer-platform#58), so point the user at the model that is not affected.
   if (code === 3030 || code === 8007 || /nsfw/i.test(detail))
     return new Error(
-      'Cloudflare menolak prompt ini sebagai NSFW padahal isinya biasa. Ini bug filter pada model FLUX di Workers AI yang belum diperbaiki Cloudflare. Ganti Model gambar ke Stable Diffusion XL di Pengaturan, lalu coba lagi.'
-    )
+'Cloudflare menolak prompt ini sebagai NSFW padahal isinya biasa. Ini bug filter pada model FLUX di Workers AI yang belum diperbaiki Cloudflare. Ganti Model gambar ke Stable Diffusion XL di Pengaturan, lalu coba lagi.'
+)
   if (status === 403) return new Error(`Cloudflare menolak akses (kode ${code ?? status}): ${detail}`)
   if (status === 429)
     return new Error(

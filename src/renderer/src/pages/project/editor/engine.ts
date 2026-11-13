@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { create } from 'zustand'
+import { fadeGain } from '@shared/audio'
 import { timelineChunks, type CaptionChunk } from '@shared/captions'
 import { transitionSecOf } from '@shared/motion'
 import { resolvePresentationOverlays } from '@shared/presentation'
@@ -176,6 +177,8 @@ export interface SfxTrack {
   start: number
   end?: number
   volumeDb: number
+  fadeInSec?: number
+  fadeOutSec?: number
 }
 
 /**
@@ -191,7 +194,9 @@ export function usePlaybackEngine(
   duck: boolean,
   voiceDb = 0,
   musicRange: { startSec: number; endSec: number; inSec: number } = { startSec: 0, endSec: Infinity, inSec: 0 },
-  sfx: SfxTrack[] = []
+  sfx: SfxTrack[] = [],
+  musicFadeInSec = 0,
+  musicFadeOutSec = 2
 ): void {
   const voices = useRef(new Map<string, HTMLAudioElement>())
   const musicEl = useRef<HTMLAudioElement | null>(null)
@@ -262,7 +267,8 @@ export function usePlaybackEngine(
         if (!w || !it.audio) return
         const a = voices.current.get(`${it.clip.id}|${it.audio.id}`)
         if (!a) return
-        a.volume = Math.min(1, voiceGain(it) / loudest)
+        const fade = fadeGain(t, w.from, w.to, (it.clip.voiceFadeInMs ?? 0) / 1000, (it.clip.voiceFadeOutMs ?? 0) / 1000)
+        a.volume = Math.min(1, (voiceGain(it) * fade) / loudest)
         // The voice as trimmed and placed in its clip; it stops at the clip's end.
         const target = w.inSec + (t - w.from)
         if (playing && t >= w.from && t < w.to) {
@@ -275,7 +281,8 @@ export function usePlaybackEngine(
       })
       const m = musicEl.current
       if (m) {
-        m.volume = Math.min(1, (dbToGain(musicDb) * (duck && voiceActive ? 0.35 : 1)) / loudest)
+        const fade = fadeGain(t, musicRange.startSec, musicRange.endSec, musicFadeInSec, musicFadeOutSec)
+        m.volume = Math.min(1, (dbToGain(musicDb) * (duck && voiceActive ? 0.35 : 1) * fade) / loudest)
         if (playing && t >= musicRange.startSec && t < musicRange.endSec) {
           const raw = musicRange.inSec + (t - musicRange.startSec)
           const target = m.duration ? raw % m.duration : raw
@@ -289,8 +296,9 @@ export function usePlaybackEngine(
       sfx.forEach((fx) => {
         const a = sfxEls.current.get(fx.id)
         if (!a) return
-        a.volume = Math.min(1, dbToGain(fx.volumeDb) / loudest)
         const span = fx.end == null ? soundSpan(fx, fx.asset, total) : { start: fx.start, end: fx.end }
+        const fade = fadeGain(t, span.start, span.end, fx.fadeInSec ?? 0, fx.fadeOutSec ?? 0)
+        a.volume = Math.min(1, (dbToGain(fx.volumeDb) * fade) / loudest)
         if (playing && t >= span.start && t < span.end) {
           const target = t - span.start
           if (a.paused) {
@@ -319,7 +327,7 @@ export function usePlaybackEngine(
       for (const a of sfxEls.current.values()) a.pause()
       musicEl.current?.pause()
     }
-  }, [items, total, musicDb, duck, voiceDb, musicRange.startSec, musicRange.endSec, musicRange.inSec, sfx])
+  }, [items, total, musicDb, duck, voiceDb, musicRange.startSec, musicRange.endSec, musicRange.inSec, sfx, musicFadeInSec, musicFadeOutSec])
 
   useEffect(() => () => usePlayback.setState({ playing: false }), [])
 }

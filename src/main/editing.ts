@@ -114,6 +114,8 @@ export async function splitClip(clipId: string, atMs: number): Promise<ProjectBu
     visualSource: '',
     durationMs: clip.durationMs - at,
     mediaInMs: clip.mediaInMs + at,
+    // The fade in belongs to the first part; the second part keeps the original fade out.
+    voiceFadeInMs: 0,
     ...voiceB
   }
   b.visualSource = visualSourceOf(b)
@@ -122,7 +124,7 @@ export async function splitClip(clipId: string, atMs: number): Promise<ProjectBu
   // The first part keeps its picture and plays up to the cut.
   const a = { ...clip, narration: narrationA }
   patchClipText(clip.id, { narration: narrationA, visualSource: visualSourceOf(a), transition: 'cut' })
-  patchClip(clip.id, { durationMs: at, ...voiceA })
+  patchClip(clip.id, { durationMs: at, voiceFadeOutMs: 0, ...voiceA })
   touchProject(clip.projectId)
   return getBundle(clip.projectId)
 }

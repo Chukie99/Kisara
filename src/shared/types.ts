@@ -113,6 +113,9 @@ export interface EditorSettings {
   musicStartMs?: number
   musicEndMs?: number | null
   musicInMs?: number
+  /** Music fades, in milliseconds; the default is no fade in and a two-second fade out. */
+  musicFadeInMs?: number
+  musicFadeOutMs?: number
   /** Last prompt written for making background music in an outside AI (Suno, Udio, …). */
   musicPrompt?: MusicPrompt | null
   soundPlan?: SoundCue[]
@@ -196,6 +199,9 @@ export interface SfxOverlay {
   start: number
   /** Volume change for this effect, in dB. */
   volumeDb: number
+  /** Fades at the effect's own edges, in seconds. */
+  fadeInSec?: number
+  fadeOutSec?: number
   /** What the sound is, for the editor list. */
   label: string
   clipId?: string
@@ -260,6 +266,14 @@ export interface Clip {
   transitionMs: number | null
   /** Volume change for this clip's narration, in dB. */
   voiceGainDb: number
+  /** Fades at the clip's narration edges, in ms. */
+  voiceFadeInMs: number
+  voiceFadeOutMs: number
+  /** Visual look of the clip: percentages for brightness, contrast and saturation, degrees for hue. */
+  lookBrightness: number
+  lookContrast: number
+  lookSaturation: number
+  lookHue: number
   /** Where the clip's video starts, in ms into the video file (trimmed from the left on the timeline). */
   mediaInMs: number
   /** The clip's voice trimmed to `voiceInMs`–`voiceOutMs` of its audio (null: to the end), placed `voiceStartMs` into the clip. */
@@ -367,6 +381,17 @@ export interface ProjectSnapshot {
   project: Omit<Project, 'createdAt' | 'updatedAt' | 'coverAssetId'>
   characters: Omit<Character, 'sheetAssetId'>[]
   clips: Omit<Clip, 'imageAssetId' | 'videoAssetId' | 'audioAssetId'>[]
+}
+
+/**
+ * Undo/redo puts the whole editor back, including the asset links a save deliberately leaves alone, and
+ * the caption words that live on the voice assets rather than on the clips.
+ */
+export interface ProjectRestore {
+  project: ProjectSnapshot['project']
+  characters: Character[]
+  clips: Clip[]
+  words?: Record<string, WordTiming[]>
 }
 
 export interface NewProjectInput {

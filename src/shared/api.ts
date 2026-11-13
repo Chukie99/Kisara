@@ -24,6 +24,7 @@ import type {
   MusicPrompt,
   NewProjectInput,
   ProjectBundle,
+  ProjectRestore,
   ProjectSnapshot,
   ProjectSummary,
   SfxHit,
@@ -43,6 +44,8 @@ export interface StudioApi {
     create(input: NewProjectInput): Promise<ProjectBundle>
     get(id: string): Promise<ProjectBundle>
     save(snapshot: ProjectSnapshot): Promise<{ updatedAt: number }>
+    /** Undo/redo: puts the editor back exactly, asset links and caption words included. */
+    restore(snapshot: ProjectRestore): Promise<{ updatedAt: number }>
     remove(id: string): Promise<void>
     duplicate(id: string): Promise<ProjectSummary>
   }

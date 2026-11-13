@@ -455,9 +455,19 @@ function generateClipImageRemote(clipId: string, provider: 'cloudflare' | 'huggi
   })
 }
 
+/** Stickman projects must keep every figure as a stickman, so the channel identity sheet is never sent. */
+function flowUsesChannelCharacter(styleId:string):boolean {
+  return styleId !== 'stickman'
+}
+/** The identity that a finished Flow image was drawn with; checked again before the result is attached. */
+function flowIdentityKey(styleId:string):string {
+  return JSON.stringify([flowUsesChannelCharacter(styleId) ? channelCharacterKey() : '',channelStyleKey(styleId)])
+}
+
 function prepareFlowBatchImage(id:string):BatchImageRequest {
   const clip=getClip(id),project=getProject(clip.projectId),chars=sceneCharacters(clip,charactersOf(project.id))
-  const identity=channelCharacterBytes(),style=channelStyleBytes(project.styleId),primary:Buffer[]=identity?[identity]:[]
+  const useChannelCharacter = flowUsesChannelCharacter(project.styleId)
+  const identity=useChannelCharacter ? channelCharacterBytes() : null,style=channelStyleBytes(project.styleId),primary:Buffer[]=identity?[identity]:[]
   let styleNumber=0
   if(style){if(identity&&sameReferenceImage(identity,style))styleNumber=1;else{primary.push(style);styleNumber=primary.length}}
   const assets=chars.map(c=>getAsset(c.sheetAssetId)).filter((a):a is Asset=>!!a).slice(0,3-primary.length)
@@ -466,7 +476,7 @@ function prepareFlowBatchImage(id:string):BatchImageRequest {
     if(!references.some(existing=>sameReferenceImage(existing,bytes))) references.push(bytes)
   }
   if(references.some(b=>b.length>20*1024*1024))throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
-  return {id,aspect:project.aspectRatio,references,prompt:channelCharacterPrompt()+channelStylePrompt(styleNumber, project.styleId)+clipPrompt(project,clip,chars,chars.filter(c=>assets.some(a=>a.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style),fingerprint:imageFingerprint(project,clip,chars),identityKey:JSON.stringify([channelCharacterKey(),channelStyleKey(project.styleId)])}
+  return {id,aspect:project.aspectRatio,references,prompt:(useChannelCharacter ? channelCharacterPrompt() : '')+channelStylePrompt(styleNumber, project.styleId)+clipPrompt(project,clip,chars,chars.filter(c=>assets.some(a=>a.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style),fingerprint:imageFingerprint(project,clip,chars),identityKey:flowIdentityKey(project.styleId)}
 }
 
 /** Images remain serial; bulk browser video leases independent accounts without sharing references. */
@@ -486,8 +496,9 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     const chars = clip ? sceneCharacters(clip, charactersOf(projectId)) : []
     const refs = kind === 'video' ? [getAsset(clip!.imageAssetId)] : chars.map(c=>getAsset(c.sheetAssetId)).filter(Boolean).slice(0,3)
     if (kind === 'video' && !refs[0]) throw new Error('Buat gambar adegan dulu sebelum membuat video Flow.')
-    let identityKey = kind === 'image' ? JSON.stringify([channelCharacterKey(), channelStyleKey(project.styleId)]) : ''
-    const identity = kind === 'image' ? channelCharacterBytes() : null
+    let identityKey = kind === 'image' ? flowIdentityKey(project.styleId) : ''
+    const useChannelCharacter = kind === 'image' && flowUsesChannelCharacter(project.styleId)
+    const identity = useChannelCharacter ? channelCharacterBytes() : null
     const style = kind === 'image' || kind === 'sheet' && project.styleId.startsWith('custom:') ? channelStyleBytes(project.styleId) : null
     const primary: Buffer[] = identity ? [identity] : []
     let styleNumber = 0
@@ -498,7 +509,7 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
     refs.splice(3 - primary.length)
     let images: Buffer[] = [...primary, ...refs.filter((a):a is Asset=>!!a).map(a=>readFileSync(assetAbsPath(projectId,a.localPath)))]
     if (images.some(b=>b.length>20*1024*1024)) throw new Error('Gambar referensi Flow terlalu besar (maksimal 20 MB).')
-    let prompt = kind === 'sheet' ? (project.styleId.startsWith('custom:') ? channelStylePrompt(styleNumber, project.styleId) : '') + sheetPrompt(project,character!) : kind === 'image' ? channelCharacterPrompt() + channelStylePrompt(styleNumber, project.styleId) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : flowVideoPrompt(clip!)
+    let prompt = kind === 'sheet' ? (project.styleId.startsWith('custom:') ? channelStylePrompt(styleNumber, project.styleId) : '') + sheetPrompt(project,character!) : kind === 'image' ? (useChannelCharacter ? channelCharacterPrompt() : '') + channelStylePrompt(styleNumber, project.styleId) + clipPrompt(project,clip!,chars,chars.filter(c=>refs.some(a=>a?.id===c.sheetAssetId)).map(c=>c.name),4000,false,!!style) : flowVideoPrompt(clip!)
     let fingerprint = clip ? imageFingerprint(project,clip,chars) : ''
     if(batch?.parallel&&kind==='image'){const request=batch.parallel.request(id);images=request.references;prompt=request.prompt;fingerprint=request.fingerprint;identityKey=request.identityKey}
     ctx.progress(.2,recover?'Mengambil video yang sudah jadi di Flow…':settings.flowImageTransport==='browser'?(kind==='video'?'Menganimasikan gambar melalui Flow di Chrome…':'Membuat gambar melalui halaman Flow di Chrome…'):kind==='video'?'Flow sedang membuat gerak dari gambar awal…':'Flow sedang membuat gambar. Akun dipilih oleh backend lokal…')
@@ -519,7 +530,7 @@ function generateFlowMedia(id: string, kind: 'image'|'sheet'|'video', batch?: { 
       setCharacterSheet(id,asset.id);emit.character({characterId:id,patch:{sheetAssetId:asset.id}})
     } else {
       const current=getClip(id)
-      if (kind === 'image' && JSON.stringify([channelCharacterKey(), channelStyleKey(project.styleId)]) !== identityKey) throw new Error('Karakter atau gaya visual berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
+      if (kind === 'image' && flowIdentityKey(project.styleId) !== identityKey) throw new Error('Karakter atau gaya visual berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
       if (imageFingerprint(getProject(projectId),current,sceneCharacters(current,charactersOf(projectId)))!==fingerprint || (kind==='video'&&(current.imageAssetId!==clip!.imageAssetId||current.videoPrompt!==clip!.videoPrompt)))throw new Error('Adegan berubah saat Flow bekerja. Hasil disimpan di riwayat dan belum dipasang.')
       const patch=kind==='image'?{imageAssetId:asset.id}:{videoAssetId:asset.id,motionType:'video' as const,mediaInMs:0}
       patchClip(id,patch);emit.clip({clipId:id,patch})
@@ -713,7 +724,7 @@ export function storyExport(projectId: string): StoryExport {
  */
 function flowBatchSettings(project: Project): string {
   const settings = getSettings()
-  return JSON.stringify([settings.imageProvider, settings.flowImageTransport, settings.flowBaseUrl, settings.flowBrowserAccountId, project.aspectRatio, channelCharacterKey(), channelStyleKey(project.styleId)])
+  return JSON.stringify([settings.imageProvider, settings.flowImageTransport, settings.flowBaseUrl, settings.flowBrowserAccountId, project.aspectRatio, flowIdentityKey(project.styleId)])
 }
 
 export function generateMissingImages(projectId: string, mode: 'missing' | 'all' = 'missing'): Job[] {

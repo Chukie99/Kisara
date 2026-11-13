@@ -13,6 +13,7 @@ import {
   type CaptionChunk
 } from '@shared/captions'
 import { cameraAt, cameraCss, transitionSecOf } from '@shared/motion'
+import { lookBrightnessLayer, lookFilterCss, lookOf } from '@shared/look'
 import { resolvePresentationOverlays } from '@shared/presentation'
 import { anchorOffset, contrastColor, overlayVisible, textEffects, textOverlayFrame } from '@shared/overlays'
 import type { AspectRatio, Asset, EditorSettings, Overlay } from '@shared/types'
@@ -51,6 +52,9 @@ function Frame({ item, local, playing, style }: { item: TimelineItem; local: num
   const p = Math.min(1, local / own)
   const cam = cameraAt(item.clip.cameraPreset, item.clip.motionStrength, p, local)
   const videoCam = cameraAt(item.clip.videoCamera ?? 'static', item.clip.videoStrength ?? 'halus', p, local)
+  const look = lookOf(item.clip)
+  const filter = lookFilterCss(look) || undefined
+  const veil = lookBrightnessLayer(look)
   return (
     <div data-clip={item.clip.id} className="absolute inset-0 overflow-hidden bg-sand" style={style}>
       {useVideo ? (
@@ -64,7 +68,7 @@ function Frame({ item, local, playing, style }: { item: TimelineItem; local: num
           className="absolute inset-0 size-full object-cover will-change-transform"
           // A moving video is kept just short of opaque so it is never promoted to a hardware overlay,
           // which would snap the camera move to whole pixels and make it tremble.
-          style={{ transform: cameraCss(videoCam), opacity: (item.clip.videoCamera ?? 'static') === 'static' ? 1 : 0.999 }}
+          style={{ transform: cameraCss(videoCam), filter, opacity: (item.clip.videoCamera ?? 'static') === 'static' ? 1 : 0.999 }}
         />
       ) : item.image ? (
         <img
@@ -72,11 +76,12 @@ function Frame({ item, local, playing, style }: { item: TimelineItem; local: num
           alt=""
           draggable={false}
           className="absolute inset-0 size-full object-cover will-change-transform"
-          style={{ transform: cameraCss(cam) }}
+          style={{ transform: cameraCss(cam), filter }}
         />
       ) : (
         <div className="flex size-full items-center justify-center text-sm text-muted">Klip {item.index + 1} belum punya gambar</div>
       )}
+      {veil && <div className="pointer-events-none absolute inset-0" style={{ background: veil.color, opacity: veil.opacity }} />}
     </div>
   )
 }
@@ -373,7 +378,7 @@ export function Player({
           {timecode(t)} <span className="text-muted">/ {timecode(total)}</span>
         </span>
         <span className="flex-1" />
-        <span className="text-xs text-ink-2">Spasi untuk putar atau jeda</span>
+        <span className="text-xs text-ink-2">Spasi putar/jeda · J/L −1/+1 dtk · ←/→ 1 frame</span>
       </div>
     </section>
   )

@@ -15,6 +15,7 @@ import type {
   NewProjectInput,
   Project,
   ProjectBundle,
+  ProjectRestore,
   ProjectSnapshot,
   ProjectSummary
 } from '@shared/types'
@@ -96,6 +97,12 @@ const toClip = (r: Row): Clip => ({
   videoStrength: r.video_strength ?? 'halus',
   transitionMs: r.transition_ms ?? null,
   voiceGainDb: r.voice_gain_db ?? 0,
+  voiceFadeInMs: r.voice_fade_in_ms ?? 0,
+  voiceFadeOutMs: r.voice_fade_out_ms ?? 0,
+  lookBrightness: r.look_brightness ?? 0,
+  lookContrast: r.look_contrast ?? 0,
+  lookSaturation: r.look_saturation ?? 0,
+  lookHue: r.look_hue ?? 0,
   mediaInMs: r.media_in_ms ?? 0,
   voiceInMs: r.voice_in_ms ?? 0,
   voiceOutMs: r.voice_out_ms ?? null,
@@ -260,15 +267,20 @@ export function saveSnapshot(snap: ProjectSnapshot): number {
     const upClip = db.prepare(
       `INSERT INTO clips (id, project_id, sort, title, story, visual_prompt, narration, duration_ms, character_ids, motion_type,
          camera_preset, motion_strength, video_prompt, transition, video_camera, video_strength, transition_ms, voice_gain_db,
+         voice_fade_in_ms, voice_fade_out_ms, look_brightness, look_contrast, look_saturation, look_hue,
          media_in_ms, voice_in_ms, voice_out_ms, voice_start_ms)
        VALUES (@id, @projectId, @sort, @title, @story, @visualPrompt, @narration, @durationMs, @characterIds, @motionType,
          @cameraPreset, @motionStrength, @videoPrompt, @transition, @videoCamera, @videoStrength, @transitionMs, @voiceGainDb,
+         @voiceFadeInMs, @voiceFadeOutMs, @lookBrightness, @lookContrast, @lookSaturation, @lookHue,
          @mediaInMs, @voiceInMs, @voiceOutMs, @voiceStartMs)
        ON CONFLICT(id) DO UPDATE SET sort = excluded.sort, title = excluded.title, story = excluded.story, visual_prompt = excluded.visual_prompt,
          narration = excluded.narration, duration_ms = excluded.duration_ms, character_ids = excluded.character_ids,
          motion_type = excluded.motion_type, camera_preset = excluded.camera_preset, motion_strength = excluded.motion_strength,
          video_prompt = excluded.video_prompt, transition = excluded.transition, video_camera = excluded.video_camera,
          video_strength = excluded.video_strength, transition_ms = excluded.transition_ms, voice_gain_db = excluded.voice_gain_db,
+         voice_fade_in_ms = excluded.voice_fade_in_ms, voice_fade_out_ms = excluded.voice_fade_out_ms,
+         look_brightness = excluded.look_brightness, look_contrast = excluded.look_contrast,
+         look_saturation = excluded.look_saturation, look_hue = excluded.look_hue,
          media_in_ms = excluded.media_in_ms, voice_in_ms = excluded.voice_in_ms, voice_out_ms = excluded.voice_out_ms,
          voice_start_ms = excluded.voice_start_ms`
     )
@@ -281,11 +293,43 @@ export function saveSnapshot(snap: ProjectSnapshot): number {
         videoStrength: c.videoStrength ?? 'halus',
         transitionMs: c.transitionMs ?? null,
         voiceGainDb: c.voiceGainDb ?? 0,
+        voiceFadeInMs: Math.round(c.voiceFadeInMs ?? 0),
+        voiceFadeOutMs: Math.round(c.voiceFadeOutMs ?? 0),
+        lookBrightness: c.lookBrightness ?? 0,
+        lookContrast: c.lookContrast ?? 0,
+        lookSaturation: c.lookSaturation ?? 0,
+        lookHue: c.lookHue ?? 0,
         mediaInMs: Math.round(c.mediaInMs ?? 0),
         voiceInMs: Math.round(c.voiceInMs ?? 0),
         voiceOutMs: c.voiceOutMs == null ? null : Math.round(c.voiceOutMs),
         voiceStartMs: Math.round(c.voiceStartMs ?? 0)
       })
+  })()
+  return now
+}
+
+/**
+ * Undo/redo: writes the editor exactly as it was, including the asset links and caption words a normal
+ * save leaves alone. Extra clips are removed and missing ones come back with their links.
+ */
+export function restoreSnapshot(snap: ProjectRestore): number {
+  const now = saveSnapshot(snap)
+  const db = getDb()
+  db.transaction(() => {
+    // `visual_source` is also owned by the main process, so a normal save never writes it back.
+    const link = db.prepare(
+      'UPDATE clips SET image_asset_id = ?, video_asset_id = ?, audio_asset_id = ?, visual_source = ? WHERE id = ? AND project_id = ?'
+    )
+    for (const c of snap.clips) link.run(c.imageAssetId, c.videoAssetId, c.audioAssetId, c.visualSource, c.id, snap.project.id)
+    const sheet = db.prepare('UPDATE characters SET sheet_asset_id = ? WHERE id = ? AND project_id = ?')
+    for (const c of snap.characters) sheet.run(c.sheetAssetId, c.id, snap.project.id)
+    if (snap.words) {
+      for (const [id, words] of Object.entries(snap.words)) {
+        const asset = getAsset(id)
+        if (!asset) continue
+        updateAssetMeta(id, { ...asset.meta, words })
+      }
+    }
   })()
   return now
 }
@@ -353,8 +397,9 @@ export function duplicateProject(id: string): ProjectSummary {
       db.prepare(
         `INSERT INTO clips (id, project_id, sort, title, story, visual_prompt, visual_source, narration, duration_ms, character_ids,
            motion_type, camera_preset, motion_strength, video_prompt, transition, image_asset_id, video_asset_id, audio_asset_id,
-           video_camera, video_strength, transition_ms, voice_gain_db, media_in_ms, voice_in_ms, voice_out_ms, voice_start_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           video_camera, video_strength, transition_ms, voice_gain_db, voice_fade_in_ms, voice_fade_out_ms,
+           look_brightness, look_contrast, look_saturation, look_hue, media_in_ms, voice_in_ms, voice_out_ms, voice_start_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         mapId(c.id),
         newId,
@@ -378,6 +423,12 @@ export function duplicateProject(id: string): ProjectSummary {
         c.videoStrength,
         c.transitionMs,
         c.voiceGainDb,
+        c.voiceFadeInMs,
+        c.voiceFadeOutMs,
+        c.lookBrightness,
+        c.lookContrast,
+        c.lookSaturation,
+        c.lookHue,
         c.mediaInMs,
         c.voiceInMs,
         c.voiceOutMs,
@@ -416,6 +467,12 @@ export type StoryClip = Omit<
   | 'videoStrength'
   | 'transitionMs'
   | 'voiceGainDb'
+  | 'voiceFadeInMs'
+  | 'voiceFadeOutMs'
+  | 'lookBrightness'
+  | 'lookContrast'
+  | 'lookSaturation'
+  | 'lookHue'
   | 'mediaInMs'
   | 'voiceInMs'
   | 'voiceOutMs'
@@ -679,7 +736,14 @@ const CLIP_COLS: Partial<Record<keyof Clip, string>> = {
   mediaInMs: 'media_in_ms',
   voiceInMs: 'voice_in_ms',
   voiceOutMs: 'voice_out_ms',
-  voiceStartMs: 'voice_start_ms'
+  voiceStartMs: 'voice_start_ms',
+  voiceGainDb: 'voice_gain_db',
+  voiceFadeInMs: 'voice_fade_in_ms',
+  voiceFadeOutMs: 'voice_fade_out_ms',
+  lookBrightness: 'look_brightness',
+  lookContrast: 'look_contrast',
+  lookSaturation: 'look_saturation',
+  lookHue: 'look_hue'
 }
 
 export function patchClip(id: string, patch: Partial<Clip>): void {
@@ -700,10 +764,12 @@ export function insertClipAfter(afterId: string, c: Clip): void {
     db.prepare(
       `INSERT INTO clips (id, project_id, sort, title, story, visual_prompt, visual_source, narration, duration_ms, character_ids,
          motion_type, camera_preset, motion_strength, video_prompt, transition, image_asset_id, video_asset_id, audio_asset_id,
-         video_camera, video_strength, transition_ms, voice_gain_db, media_in_ms, voice_in_ms, voice_out_ms, voice_start_ms)
+         video_camera, video_strength, transition_ms, voice_gain_db, voice_fade_in_ms, voice_fade_out_ms,
+         look_brightness, look_contrast, look_saturation, look_hue, media_in_ms, voice_in_ms, voice_out_ms, voice_start_ms)
        VALUES (@id, @projectId, @sort, @title, @story, @visualPrompt, @visualSource, @narration, @durationMs, @characterIds,
          @motionType, @cameraPreset, @motionStrength, @videoPrompt, @transition, @imageAssetId, @videoAssetId, @audioAssetId,
-         @videoCamera, @videoStrength, @transitionMs, @voiceGainDb, @mediaInMs, @voiceInMs, @voiceOutMs, @voiceStartMs)`
+         @videoCamera, @videoStrength, @transitionMs, @voiceGainDb, @voiceFadeInMs, @voiceFadeOutMs,
+         @lookBrightness, @lookContrast, @lookSaturation, @lookHue, @mediaInMs, @voiceInMs, @voiceOutMs, @voiceStartMs)`
     ).run({ ...c, projectId: after.projectId, sort: after.sort + 1, characterIds: JSON.stringify(c.characterIds) })
   })()
 }

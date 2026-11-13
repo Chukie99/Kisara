@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { Film, Image as ImageIcon, Layers, Mic, Music, Scissors, Trash2, Type, ZoomIn } from 'lucide-react'
+import { Film, Image as ImageIcon, Layers, Mic, Music, Redo2, Scissors, Trash2, Type, Undo2, ZoomIn } from 'lucide-react'
 import type { CaptionChunk } from '@shared/captions'
 import { overlayEnd } from '@shared/overlays'
 import { MIN_ITEM_MS, musicSpan, voiceSpan } from '@shared/timeline'
@@ -8,7 +8,7 @@ import type { Asset, EditorSettings, Overlay, WordTiming } from '@shared/types'
 import { cx } from '../../../components/ui'
 import { errorText, timecode } from '../../../lib/format'
 import { useApp } from '../../../store/app'
-import { useProject } from '../../../store/project'
+import { useProject, recordHistory, useHistory } from '../../../store/project'
 import { UNKNOWN_AUDIO_MS, updateOverlay, usePresentationOverlays, usePlayback, voiceWindow, type TimelineItem } from './engine'
 import { TransitionButton } from './TransitionButton'
 import { Waveform } from './Waveform'
@@ -152,6 +152,7 @@ export function Timeline({
   const seek = usePlayback((s) => s.seek)
   const updateClip = useProject((s) => s.updateClip)
   const updateEditor = useProject((s) => s.updateEditor)
+  const { canUndo, canRedo, undo, redo, undoLabel, redoLabel } = useHistory()
   const { toast } = useApp()
   // While dragging, the scale stays as it was when the drag began, so a clip that grows does not shrink the view.
   const [frozenPps, setFrozenPps] = useState<number | null>(null)
@@ -349,6 +350,7 @@ export function Timeline({
           setCapDrag(null)
           const asset = assets[src.key]
           if (!asset || (start === c.start && end === c.end)) return
+          recordHistory('Atur waktu caption', `caption:${src.key}:${src.from}`)
           window.api.assets.setWords(asset.id, retimedWords(asset.meta.words ?? [], c, start, end)).catch((e) => toast('error', errorText(e)))
         }
       }
@@ -413,6 +415,15 @@ export function Timeline({
   return (
     <section className="flex min-h-0 min-w-0 flex-col border-t border-line-2 bg-surface">
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-[13px] text-ink-2">
+        <button type="button" className={btn} disabled={!canUndo} onClick={() => void undo()} title={undoLabel ? `Batalkan ${undoLabel} (Ctrl+Z)` : 'Belum ada yang bisa dibatalkan'}>
+          <Undo2 className="size-4" />
+          Urungkan
+        </button>
+        <button type="button" className={btn} disabled={!canRedo} onClick={() => void redo()} title={redoLabel ? `Ulangi ${redoLabel} (Ctrl+Shift+Z)` : 'Belum ada yang bisa diulang'}>
+          <Redo2 className="size-4" />
+          Ulangi
+        </button>
+        <span className="mx-1 h-5 w-px bg-line" />
         <button type="button" className={btn} disabled={!canSplit} onClick={onSplit} title="Potong di posisi playhead (S)">
           <Scissors className="size-4" />
           Potong
@@ -421,7 +432,7 @@ export function Timeline({
           <Trash2 className="size-4" />
           Hapus
         </button>
-        <span className="ml-2 min-w-0 truncate">Klik untuk memilih, tarik tepinya untuk mengubah durasi, geser untuk memindahkan.</span>
+        <span className="ml-2 min-w-0 truncate">Spasi putar/jeda · J/L −1/+1 dtk · ←/→ 1 frame · Home/End awal/akhir</span>
         <span className="flex-1" />
         <label className="flex shrink-0 items-center gap-2">
           <ZoomIn className="size-4" />

@@ -5,6 +5,7 @@ export class FlowImageBatch {
   private requests = new Map<string,BatchImageRequest>()
   private results = new Map<string,BatchImageResult>()
   private loaded = new Set<number>()
+  private inFlight = new Map<number, Promise<void>>()
   private stopped = false
   constructor(private ids:string[],private prepare:(id:string)=>BatchImageRequest,private send:(requests:BatchImageRequest[],signal:AbortSignal)=>Promise<BatchImageResult[]>,private size=10) {
     if(size<1||size>10||!Number.isInteger(size)||new Set(ids).size!==ids.length)throw new Error('Antrean gambar tidak valid.')
@@ -32,19 +33,30 @@ export class FlowImageBatch {
       if(this.stopped)throw new Error('Antrean dihentikan setelah kegagalan sebelumnya.')
       const index=this.ids.indexOf(id),group=Math.floor(index/this.size)
       const ids=this.ids.slice(group*this.size,(group+1)*this.size)
-      try {
-        const results=await this.send(ids.map(key=>this.requests.get(key)!),signal)
-        const seen=new Set<string>()
-        for(const result of results) {
-          if(!ids.includes(result.id)||seen.has(result.id)||!!result.bytes===!!result.error)throw new Error('Pemetaan hasil batch Flow tidak valid; hasil belum dipasang.')
-          seen.add(result.id)
-        }
-        if(seen.size!==ids.length)throw new Error('Hasil batch Flow belum lengkap; permintaan tidak diulang.')
-        for(const result of results)this.results.set(result.id,result)
-        // Snapshots remain for asset validation, but reference bytes are no longer needed after submission.
-        for(const key of ids)this.requests.get(key)!.references=[]
-        if(results.some(r=>r.error))this.stopped=true
-      } catch(e) {this.stopped=true;throw e}
+      const pending = this.inFlight.get(group)
+      if (pending) await pending
+      else {
+        // Concurrent callers share one submission; sending the same group twice would create duplicate Flow jobs.
+        // Start the body on a later microtask so `inFlight` is populated before a synchronous failure can clean up.
+        const work = Promise.resolve().then(async () => {
+          try {
+            const results=await this.send(ids.map(key=>this.requests.get(key)!),signal)
+            const seen=new Set<string>()
+            for(const result of results) {
+              if(!ids.includes(result.id)||seen.has(result.id)||!!result.bytes===!!result.error)throw new Error('Pemetaan hasil batch Flow tidak valid; hasil belum dipasang.')
+              seen.add(result.id)
+            }
+            if(seen.size!==ids.length)throw new Error('Hasil batch Flow belum lengkap; permintaan tidak diulang.')
+            for(const result of results)this.results.set(result.id,result)
+            // Snapshots remain for asset validation, but reference bytes are no longer needed after submission.
+            for(const key of ids)this.requests.get(key)!.references=[]
+            if(results.some(r=>r.error))this.stopped=true
+          } catch(e) {this.stopped=true;throw e}
+          finally {this.inFlight.delete(group)}
+        })
+        this.inFlight.set(group, work)
+        await work
+      }
     }
     const result=this.results.get(request.id)!
     if(!result.bytes)throw new Error(result.error||'Gambar belum dapat dipastikan.')

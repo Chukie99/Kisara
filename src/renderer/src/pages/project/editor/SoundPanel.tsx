@@ -84,7 +84,7 @@ export function SoundPanel() {
       const duration = state.clips.reduce((n, c) => n + c.durationMs / 1000, 0)
       if (start >= duration) throw new Error('Geser playhead ke dalam video sebelum menambah efek.')
       addAsset(asset)
-      state.updateEditor({ sfx: [...(state.project.editor.sfx ?? []), { id: crypto.randomUUID(), assetId: asset.id, label: hit.name, start, volumeDb: -12 }] })
+      state.updateEditor({ sfx: [...(state.project.editor.sfx ?? []), { id: crypto.randomUUID(), assetId: asset.id, label: hit.name, start, volumeDb: -12, fadeInSec: 0, fadeOutSec: 0 }] })
       toast('success', 'Efek ditambahkan ke timeline.')
     } catch (e) { toast('error', errorText(e)) }
     finally { setAdding(null) }
@@ -142,6 +142,18 @@ export function SoundPanel() {
             <div className="flex items-start gap-2"><button type="button" onClick={() => usePlayback.getState().seek(start)} className="min-w-0 flex-1 break-words text-left font-medium">{fx.label}</button><button type="button" aria-label={`Hapus efek ${fx.label}`} onClick={() => updateEditor({ sfx: effects.filter((e) => e.id !== fx.id) })}><Trash2 className="size-4 text-muted" /></button></div>
             <label className="flex items-center gap-2 text-xs text-muted">Mulai (dtk)<input type="number" min={0} max={total} step={0.1} value={Math.round(start * 1000) / 1000} onChange={(e) => { const value = e.currentTarget.valueAsNumber; if (Number.isFinite(value)) patch(fx.id, { start: Math.max(0, Math.min(total, value)), clipId: undefined, offsetSec: undefined, source: undefined }) }} className={`${inputCls} w-24 text-xs`} /></label>
             <label className="flex items-center gap-2 text-xs text-muted">Volume<input type="range" min={-36} max={0} value={fx.volumeDb} onChange={(e) => patch(fx.id, { volumeDb: Number(e.target.value) })} aria-label={`Volume ${fx.label}`} className="min-w-0 flex-1" /><span>{fx.volumeDb} dB</span></label>
+            <div className="flex gap-3">
+              <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
+                Fade masuk
+                <input type="number" min={0} max={10} step={0.1} value={fx.fadeInSec ?? 0} onChange={(e) => { const v = e.currentTarget.valueAsNumber; if (Number.isFinite(v)) patch(fx.id, { fadeInSec: Math.max(0, Math.min(10, v)) }) }} className={`${inputCls} w-16 text-xs`} />
+                dtk
+              </label>
+              <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
+                Fade keluar
+                <input type="number" min={0} max={10} step={0.1} value={fx.fadeOutSec ?? 0} onChange={(e) => { const v = e.currentTarget.valueAsNumber; if (Number.isFinite(v)) patch(fx.id, { fadeOutSec: Math.max(0, Math.min(10, v)) }) }} className={`${inputCls} w-16 text-xs`} />
+                dtk
+              </label>
+            </div>
             <p className="text-[11px] text-muted">{timecode(start)} · {fx.clipId ? 'Mengikuti adegan · ' : ''}{String(asset?.meta.license ?? 'Periksa sumber audio')}</p>
           </div>
         )})}

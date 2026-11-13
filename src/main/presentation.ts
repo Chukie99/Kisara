@@ -12,7 +12,8 @@ export function createPresentationVersion(projectId: string): ProjectBundle {
       overlays: [], sfx: [], soundPlan: undefined, captionStyle: 'none' } }, characters: bundle.characters,
     clips: bundle.clips.map(clip => ({ ...clip, visualPrompt: '', visualSource: null, videoPrompt: '', imageAssetId: null, videoAssetId: null, audioAssetId: null,
       motionType: 'camera', cameraPreset: 'pushhold', motionStrength: 'halus', videoCamera: 'static', videoStrength: 'halus', transition: 'cut', transitionMs: null,
-      mediaInMs: 0, voiceInMs: 0, voiceOutMs: null, voiceStartMs: 0 })) })
+      mediaInMs: 0, voiceInMs: 0, voiceOutMs: null, voiceStartMs: 0, voiceFadeInMs: 0, voiceFadeOutMs: 0,
+      lookBrightness: 0, lookContrast: 0, lookSaturation: 0, lookHue: 0 })) })
   // Snapshot saves editable fields; media links belong to main and must be detached explicitly.
   for (const clip of bundle.clips) {
     patchClip(clip.id, { imageAssetId: null, videoAssetId: null, audioAssetId: null })

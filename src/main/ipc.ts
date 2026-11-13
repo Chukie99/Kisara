@@ -28,6 +28,7 @@ import type {
   KeyTestResult,
   ModelSource,
   NewProjectInput,
+  ProjectRestore,
   ProjectSnapshot,
   SourceOptions,
   SfxHit,
@@ -69,6 +70,7 @@ import {
   listProjects,
   patchClip,
   removeProject,
+  restoreSnapshot,
   saveSnapshot,
   touchProject,
   updateAssetMeta
@@ -165,6 +167,7 @@ export function registerIpc(): void {
   handle('projects:create', (input: NewProjectInput) => getBundle(createProject(input).id))
   handle('projects:get', (id: string) => getBundle(id))
   handle('projects:save', (snap: ProjectSnapshot) => ({ updatedAt: saveSnapshot(snap) }))
+  handle('projects:restore', (snap: ProjectRestore) => ({ updatedAt: restoreSnapshot(snap) }))
   handle('projects:remove', (id: string) => removeProject(id))
   handle('projects:duplicate', (id: string) => duplicateProject(id))
 
