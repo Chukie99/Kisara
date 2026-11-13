@@ -145,6 +145,12 @@ async function runPipeline(projectId: string): Promise<void> {
   await checkFlowReady('image')
   const imageJobs = generateMissingImages(projectId)
   await Promise.all(imageJobs.map((j) => completedJob(j.id)))
+  // Images must exist before Flow can animate them into video clips.
+  const videoJobs = await generateMissingVideos(projectId)
+  if (videoJobs.length) {
+    await checkFlowReady('video')
+    await Promise.all(videoJobs.map((j) => completedJob(j.id)))
+  }
   // A project with nothing left to voice, or nothing to time, is not an error here.
   const fresh = getBundle(projectId)
   if (fresh.clips.some((c) => narrationNeedsRefresh(getAsset(c.audioAssetId), c, fresh.project)))
